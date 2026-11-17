@@ -1,0 +1,1704 @@
+HEADER "Content-Type" AS "text/html"
+AFTER HEADER "Cache-Control" AS "no-store"
+(* ================================================================= *)
+(* YOUSEARCH                                                          *)
+(*                                                                     *)
+(* Multi-source internet search engine written in OcaltQL             *)
+(*                                                                     *)
+(* INPUT:    !GET("q")                                                 *)
+(* TABS:     All (default), or one of the flags below                  *)
+(*             ?q=...&news=1  &images=1  &research=1  &code=1  &books=1*)
+(* SOURCES:  All       DuckDuckGo, Mojeek, Wikipedia                   *)
+(*           News      GDELT (global news index, no API key)           *)
+(*           Images    Wikimedia Commons                               *)
+(*           Research  arXiv                                           *)
+(*           Code      GitHub, Stack Overflow                          *)
+(*           Books     Open Library                                    *)
+(*                                                                     *)
+(* Only the sources the active tab needs are fetched.                  *)
+(* No POST body parsing. No AJAX. No API keys.                         *)
+(* ================================================================= *)
+
+
+(* ================================================================= *)
+(* 1. READ INPUT AND INITIALISE                                       *)
+(* ================================================================= *)
+
+AFTER STRING !GET("q") SET ?query
+AFTER TRIM STRING ?query SET ?query
+AFTER ENCODE ?query AS URL SET ?encoded_query
+
+AFTER STRING "" SET ?search_error
+AFTER STRING "" SET ?web_none
+
+AFTER NEW ARRAY SET ?web_results
+AFTER NEW ARRAY SET ?mojeek_results
+AFTER NEW ARRAY SET ?wiki_results
+AFTER NEW ARRAY SET ?news_results
+AFTER NEW ARRAY SET ?img_results
+AFTER NEW ARRAY SET ?arxiv_results
+AFTER NEW ARRAY SET ?gh_results
+AFTER NEW ARRAY SET ?so_results
+AFTER NEW ARRAY SET ?book_results
+
+AFTER NUMBER 0 SET ?web_count
+AFTER NUMBER 0 SET ?mojeek_count
+AFTER NUMBER 0 SET ?wiki_count
+AFTER NUMBER 0 SET ?news_count
+AFTER NUMBER 0 SET ?img_count
+AFTER NUMBER 0 SET ?arxiv_count
+AFTER NUMBER 0 SET ?gh_count
+AFTER NUMBER 0 SET ?so_count
+AFTER NUMBER 0 SET ?book_count
+
+
+(* ================================================================= *)
+(* 2. TAB STATE                                                       *)
+(*                                                                     *)
+(* A tab is a GET flag. No flag means the All tab.                    *)
+(*   ?go_all   non-empty when web + Wikipedia should be fetched       *)
+(*   ?go_news  non-empty when news should be fetched (All and News)   *)
+(*   ?c_*      CSS class of each tab link                             *)
+(*   ?keep     name of the hidden field that keeps the tab on search  *)
+(*   ?body_cls class on <body>, used by the stylesheet                *)
+(* ================================================================= *)
+
+AFTER STRING !GET("news") SET ?f_news
+AFTER STRING !GET("images") SET ?f_images
+AFTER STRING !GET("research") SET ?f_research
+AFTER STRING !GET("code") SET ?f_code
+AFTER STRING !GET("books") SET ?f_books
+
+AFTER STRING "1" SET ?go_all
+AFTER STRING "1" SET ?go_news
+
+AFTER STRING "tab active" SET ?c_all
+AFTER STRING "tab" SET ?c_news
+AFTER STRING "tab" SET ?c_images
+AFTER STRING "tab" SET ?c_research
+AFTER STRING "tab" SET ?c_code
+AFTER STRING "tab" SET ?c_books
+
+AFTER STRING "view" SET ?keep
+AFTER STRING "page-all" SET ?body_cls
+
+AFTER IF ?f_news IS NOT EMPTY
+OPEN
+
+  STRING "tab" SET ?c_all
+  AFTER STRING "tab active" SET ?c_news
+  AFTER STRING "news" SET ?keep
+  AFTER STRING "page-news" SET ?body_cls
+  AFTER STRING "" SET ?go_all
+
+CLOSE
+
+AFTER IF ?f_images IS NOT EMPTY
+OPEN
+
+  STRING "tab" SET ?c_all
+  AFTER STRING "tab active" SET ?c_images
+  AFTER STRING "images" SET ?keep
+  AFTER STRING "page-images" SET ?body_cls
+  AFTER STRING "" SET ?go_all
+  AFTER STRING "" SET ?go_news
+
+CLOSE
+
+AFTER IF ?f_research IS NOT EMPTY
+OPEN
+
+  STRING "tab" SET ?c_all
+  AFTER STRING "tab active" SET ?c_research
+  AFTER STRING "research" SET ?keep
+  AFTER STRING "page-research" SET ?body_cls
+  AFTER STRING "" SET ?go_all
+  AFTER STRING "" SET ?go_news
+
+CLOSE
+
+AFTER IF ?f_code IS NOT EMPTY
+OPEN
+
+  STRING "tab" SET ?c_all
+  AFTER STRING "tab active" SET ?c_code
+  AFTER STRING "code" SET ?keep
+  AFTER STRING "page-code" SET ?body_cls
+  AFTER STRING "" SET ?go_all
+  AFTER STRING "" SET ?go_news
+
+CLOSE
+
+AFTER IF ?f_books IS NOT EMPTY
+OPEN
+
+  STRING "tab" SET ?c_all
+  AFTER STRING "tab active" SET ?c_books
+  AFTER STRING "books" SET ?keep
+  AFTER STRING "page-books" SET ?body_cls
+  AFTER STRING "" SET ?go_all
+  AFTER STRING "" SET ?go_news
+
+CLOSE
+
+AFTER STRING "YouSearch" SET ?page_title
+
+AFTER IF ?query IS NOT EMPTY
+OPEN
+
+  STRING ?query & " - YouSearch" SET ?page_title
+
+CLOSE
+
+(* Tab links *)
+
+AFTER STRING "?q=" & ?encoded_query SET ?href_all
+AFTER STRING "?q=" & ?encoded_query & "&news=1" SET ?href_news
+AFTER STRING "?q=" & ?encoded_query & "&images=1" SET ?href_images
+AFTER STRING "?q=" & ?encoded_query & "&research=1" SET ?href_research
+AFTER STRING "?q=" & ?encoded_query & "&code=1" SET ?href_code
+AFTER STRING "?q=" & ?encoded_query & "&books=1" SET ?href_books
+
+
+(* ================================================================= *)
+(* 3. SEARCH EXECUTION                                                *)
+(* ================================================================= *)
+
+AFTER IF ?query IS NOT EMPTY
+OPEN
+
+  LENGTH ?query SET ?query_length
+  AFTER IF ?query_length IS GREATER THAN 250
+  OPEN
+
+    STRING "Your search query must not exceed 250 characters."
+    SET ?search_error
+
+  CLOSE
+
+  OR
+
+  OPEN
+
+    (* ============================================================= *)
+    (* 3a. ALL TAB: DuckDuckGo + Mojeek + Wikipedia                   *)
+    (* ============================================================= *)
+
+    IF ?go_all IS NOT EMPTY
+    OPEN
+
+      STRING "https://html.duckduckgo.com/html/?q=" & ?encoded_query SET ?ddg_url
+
+      AFTER STRING "https://www.mojeek.com/search?q=" & ?encoded_query SET ?mojeek_url
+
+      AFTER STRING
+        "https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrlimit=6&prop=pageimages%7Cextracts%7Cinfo&inprop=url&exintro=1&explaintext=1&exsentences=3&exlimit=max&piprop=thumbnail&pithumbsize=400&format=json&formatversion=2&origin=*&gsrsearch="
+        & ?encoded_query
+        SET ?wiki_url
+
+      (* --- DuckDuckGo. Unwraps the redirect link to the real URL. --- *)
+
+      AFTER BROWSER OPEN ?ddg_url SET ?ddg_session
+
+      AFTER BROWSER ?ddg_session WAIT 2 SET ?ddg_session
+
+      AFTER BROWSER ?ddg_session EVALUATE
+      "JSON.stringify(
+        Array.from(document.querySelectorAll('.result'))
+        .filter(function(e) { return !e.classList.contains('result--ad'); })
+        .map(function(e) {
+          var a = e.querySelector('a.result__a');
+          var s = e.querySelector('.result__snippet');
+          if (!a) return null;
+          var u = a.href, h = '', p = '';
+          try { u = new URL(a.href).searchParams.get('uddg') || a.href; } catch (x) {}
+          if (u.indexOf('http') !== 0) return null;
+          try {
+            var L = new URL(u);
+            h = L.hostname.replace('www.', '');
+            p = L.pathname.split('/').filter(Boolean).slice(0, 2).map(decodeURIComponent).join(' › ');
+          } catch (x) {}
+          return {
+            title: a.textContent.trim(),
+            url: u,
+            site: h,
+            path: p ? '› ' + p : '',
+            description: s ? s.textContent.trim() : '',
+            meta: ''
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 12)
+      )"
+      SET ?ddg_json
+
+      AFTER PARSE ?ddg_json AS JSON SET ?web_results
+
+      AFTER BROWSER ?ddg_session CLOSE
+
+      AFTER COUNT ?web_results SET ?web_count
+
+      (* --- Mojeek: independent index, widens the open-web reach. --- *)
+
+      AFTER BROWSER OPEN ?mojeek_url SET ?mojeek_session
+
+      AFTER BROWSER ?mojeek_session WAIT 2 SET ?mojeek_session
+
+      AFTER BROWSER ?mojeek_session EVALUATE
+      "JSON.stringify(
+        Array.from(document.querySelectorAll('ul.results-standard > li'))
+        .map(function(e) {
+          var a = e.querySelector('a.title');
+          var s = e.querySelector('p.s');
+          if (!a || a.href.indexOf('http') !== 0) return null;
+          var h = '', p = '';
+          try {
+            var L = new URL(a.href);
+            h = L.hostname.replace('www.', '');
+            p = L.pathname.split('/').filter(Boolean).slice(0, 2).map(decodeURIComponent).join(' › ');
+          } catch (x) {}
+          return {
+            title: a.textContent.trim(),
+            url: a.href,
+            site: h,
+            path: p ? '› ' + p : '',
+            description: s ? s.textContent.trim() : '',
+            meta: ''
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 10)
+      )"
+      SET ?mojeek_json
+
+      AFTER PARSE ?mojeek_json AS JSON SET ?mojeek_results
+
+      AFTER BROWSER ?mojeek_session CLOSE
+
+      AFTER COUNT ?mojeek_results SET ?mojeek_count
+
+      (* --- Wikipedia (JSON API): feeds the knowledge panel. --- *)
+
+      AFTER BROWSER OPEN ?wiki_url SET ?wiki_session
+
+      AFTER BROWSER ?wiki_session WAIT 1 SET ?wiki_session
+
+      AFTER BROWSER ?wiki_session EVALUATE
+      "(function() {
+        try {
+          var t = (document.querySelector('pre') || document.body).textContent;
+          var pages = JSON.parse(t).query.pages;
+          pages.sort(function(a, b) { return a.index - b.index; });
+          return JSON.stringify(pages.map(function(p) {
+            return {
+              title: p.title,
+              url: p.fullurl,
+              site: 'wikipedia.org',
+              path: '',
+              description: p.extract || '',
+              meta: '',
+              image: p.thumbnail ? p.thumbnail.source : ''
+            };
+          }));
+        } catch (x) { return '[]'; }
+      })()"
+      SET ?wiki_json
+
+      AFTER PARSE ?wiki_json AS JSON SET ?wiki_results
+
+      AFTER BROWSER ?wiki_session CLOSE
+
+      AFTER COUNT ?wiki_results SET ?wiki_count
+
+      (* --- Flag: no web results from either engine --- *)
+
+      AFTER STRING "1" SET ?web_none
+
+      AFTER IF ?web_count IS GREATER THAN 0
+      OPEN
+
+        STRING "" SET ?web_none
+
+      CLOSE
+
+      AFTER IF ?mojeek_count IS GREATER THAN 0
+      OPEN
+
+        STRING "" SET ?web_none
+
+      CLOSE
+
+    CLOSE
+
+
+    (* ============================================================= *)
+    (* 3b. NEWS: GDELT                                                *)
+    (* ============================================================= *)
+
+    AFTER IF ?go_news IS NOT EMPTY
+    OPEN
+
+      STRING
+        "https://api.gdeltproject.org/api/v2/doc/doc?mode=artlist&maxrecords=15&format=json&sort=HybridRel&query="
+        & ?encoded_query
+        & "%20sourcelang%3Aenglish"
+        SET ?news_url
+
+      AFTER BROWSER OPEN ?news_url SET ?news_session
+
+      AFTER BROWSER ?news_session WAIT 1 SET ?news_session
+
+      AFTER BROWSER ?news_session EVALUATE
+      "(function() {
+        try {
+          var t = (document.querySelector('pre') || document.body).textContent;
+          return JSON.stringify(JSON.parse(t).articles.map(function(a) {
+            var d = a.seendate || '';
+            return {
+              title: a.title,
+              url: a.url,
+              site: a.domain,
+              path: '',
+              description: '',
+              meta: d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6, 8)
+            };
+          }));
+        } catch (x) { return '[]'; }
+      })()"
+      SET ?news_json
+
+      AFTER PARSE ?news_json AS JSON SET ?news_results
+
+      AFTER BROWSER ?news_session CLOSE
+
+      AFTER COUNT ?news_results SET ?news_count
+
+    CLOSE
+
+
+    (* ============================================================= *)
+    (* 3c. IMAGES: Wikimedia Commons                                  *)
+    (* ============================================================= *)
+
+    AFTER IF ?f_images IS NOT EMPTY
+    OPEN
+
+      STRING
+        "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrlimit=30&prop=imageinfo&iiprop=url%7Cmime&iiurlwidth=400&format=json&formatversion=2&origin=*&gsrsearch="
+        & ?encoded_query
+        & "%20filetype%3Abitmap"
+        SET ?img_url
+
+      AFTER BROWSER OPEN ?img_url SET ?img_session
+
+      AFTER BROWSER ?img_session WAIT 1 SET ?img_session
+
+      AFTER BROWSER ?img_session EVALUATE
+      "(function() {
+        try {
+          var t = (document.querySelector('pre') || document.body).textContent;
+          var pages = JSON.parse(t).query.pages;
+          pages.sort(function(a, b) { return a.index - b.index; });
+          return JSON.stringify(
+            pages
+            .filter(function(p) {
+              return p.imageinfo && p.imageinfo[0].thumburl && p.imageinfo[0].mime.indexOf('image/') === 0;
+            })
+            .map(function(p) {
+              return {
+                title: p.title.replace('File:', ''),
+                url: p.imageinfo[0].descriptionurl,
+                image: p.imageinfo[0].thumburl
+              };
+            })
+          );
+        } catch (x) { return '[]'; }
+      })()"
+      SET ?img_json
+
+      AFTER PARSE ?img_json AS JSON SET ?img_results
+
+      AFTER BROWSER ?img_session CLOSE
+
+      AFTER COUNT ?img_results SET ?img_count
+
+    CLOSE
+
+
+    (* ============================================================= *)
+    (* 3d. RESEARCH: arXiv                                            *)
+    (* ============================================================= *)
+
+    AFTER IF ?f_research IS NOT EMPTY
+    OPEN
+
+      STRING
+        "https://arxiv.org/search/?query="
+        & ?encoded_query
+        & "&searchtype=all&abstracts=show&order=-relevance&size=15"
+        SET ?arxiv_url
+
+      AFTER BROWSER OPEN ?arxiv_url SET ?arxiv_session
+
+      AFTER BROWSER ?arxiv_session WAIT 2 SET ?arxiv_session
+
+      AFTER BROWSER ?arxiv_session EVALUATE
+      "JSON.stringify(
+        Array.from(document.querySelectorAll('li.arxiv-result'))
+        .map(function(e) {
+          var link = e.querySelector('p.list-title a[href*=\"abs\"]');
+          var title = e.querySelector('p.title');
+          var abs = e.querySelector('span.abstract-short') || e.querySelector('p.abstract');
+          var au = e.querySelector('p.authors');
+          if (!link || !title) return null;
+          return {
+            title: title.innerText.trim(),
+            url: link.href,
+            site: 'arxiv.org',
+            path: '',
+            description: abs ? abs.innerText.replace('▽ More', '').replace('Abstract:', '').trim() : '',
+            meta: au ? au.innerText.replace('Authors:', '').trim() : ''
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 15)
+      )"
+      SET ?arxiv_json
+
+      AFTER PARSE ?arxiv_json AS JSON SET ?arxiv_results
+
+      AFTER BROWSER ?arxiv_session CLOSE
+
+      AFTER COUNT ?arxiv_results SET ?arxiv_count
+
+    CLOSE
+
+
+    (* ============================================================= *)
+    (* 3e. CODE: GitHub + Stack Overflow                              *)
+    (* ============================================================= *)
+
+    AFTER IF ?f_code IS NOT EMPTY
+    OPEN
+
+      STRING "https://api.github.com/search/repositories?per_page=10&q=" & ?encoded_query SET ?gh_url
+
+      AFTER STRING
+        "https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&pagesize=10&site=stackoverflow&q="
+        & ?encoded_query
+        SET ?so_url
+
+      AFTER BROWSER OPEN ?gh_url SET ?gh_session
+
+      AFTER BROWSER ?gh_session WAIT 1 SET ?gh_session
+
+      AFTER BROWSER ?gh_session EVALUATE
+      "(function() {
+        try {
+          var t = (document.querySelector('pre') || document.body).textContent;
+          return JSON.stringify(JSON.parse(t).items.map(function(r) {
+            return {
+              title: r.full_name,
+              url: r.html_url,
+              site: 'github.com',
+              path: '',
+              description: r.description || '',
+              meta: '★ ' + r.stargazers_count + (r.language ? '  ·  ' + r.language : '')
+            };
+          }));
+        } catch (x) { return '[]'; }
+      })()"
+      SET ?gh_json
+
+      AFTER PARSE ?gh_json AS JSON SET ?gh_results
+
+      AFTER BROWSER ?gh_session CLOSE
+
+      AFTER COUNT ?gh_results SET ?gh_count
+
+      AFTER BROWSER OPEN ?so_url SET ?so_session
+
+      AFTER BROWSER ?so_session WAIT 1 SET ?so_session
+
+      AFTER BROWSER ?so_session EVALUATE
+      "(function() {
+        try {
+          var t = (document.querySelector('pre') || document.body).textContent;
+          var dec = function(s) { var z = document.createElement('textarea'); z.innerHTML = s; return z.value; };
+          return JSON.stringify(JSON.parse(t).items.map(function(i) {
+            return {
+              title: dec(i.title),
+              url: i.link,
+              site: 'stackoverflow.com',
+              path: '',
+              description: i.tags.join(', '),
+              meta: i.score + ' votes  ·  ' + i.answer_count + ' answers' + (i.is_answered ? '  ·  answered' : '')
+            };
+          }));
+        } catch (x) { return '[]'; }
+      })()"
+      SET ?so_json
+
+      AFTER PARSE ?so_json AS JSON SET ?so_results
+
+      AFTER BROWSER ?so_session CLOSE
+
+      AFTER COUNT ?so_results SET ?so_count
+
+    CLOSE
+
+
+    (* ============================================================= *)
+    (* 3f. BOOKS: Open Library                                        *)
+    (* ============================================================= *)
+
+    AFTER IF ?f_books IS NOT EMPTY
+    OPEN
+
+      STRING
+        "https://openlibrary.org/search.json?limit=12&fields=key%2Ctitle%2Cauthor_name%2Cfirst_publish_year&q="
+        & ?encoded_query
+        SET ?book_url
+
+      AFTER BROWSER OPEN ?book_url SET ?book_session
+
+      AFTER BROWSER ?book_session WAIT 1 SET ?book_session
+
+      AFTER BROWSER ?book_session EVALUATE
+      "(function() {
+        try {
+          var t = (document.querySelector('pre') || document.body).textContent;
+          return JSON.stringify(JSON.parse(t).docs.map(function(d) {
+            return {
+              title: d.title,
+              url: 'https://openlibrary.org' + d.key,
+              site: 'openlibrary.org',
+              path: '',
+              description: (d.author_name || []).slice(0, 3).join(', '),
+              meta: d.first_publish_year ? 'First published ' + d.first_publish_year : ''
+            };
+          }));
+        } catch (x) { return '[]'; }
+      })()"
+      SET ?book_json
+
+      AFTER PARSE ?book_json AS JSON SET ?book_results
+
+      AFTER BROWSER ?book_session CLOSE
+
+      AFTER COUNT ?book_results SET ?book_count
+
+    CLOSE
+
+  CLOSE
+
+CLOSE
+
+
+(* ================================================================= *)
+(* 4. CONSTRUCT THE PAGE                                              *)
+(* ================================================================= *)
+
+AFTER NEW HTML SET ?page
+OPEN
+
+  (* ----------------------------------------------------------------- *)
+  (* HEAD                                                              *)
+  (* ----------------------------------------------------------------- *)
+
+  HTML "head"
+  OPEN
+
+    HTML "meta"
+      ATTR "charset" WITH "utf-8"
+
+    AFTER HTML "meta"
+      ATTR "name" WITH "viewport"
+      AND ATTR "content" WITH "width=device-width, initial-scale=1"
+
+    AFTER HTML "meta"
+      ATTR "name" WITH "color-scheme"
+      AND ATTR "content" WITH "light dark"
+
+    AFTER HTML "link"
+      ATTR "rel" WITH "icon"
+      AND ATTR "href" WITH "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231a73e8'/%3E%3Ctext x='16' y='23' font-size='20' font-weight='700' text-anchor='middle' fill='white' font-family='Arial'%3EY%3C/text%3E%3C/svg%3E"
+
+    AFTER HTML "title"
+      TEXT ?page_title
+
+    AFTER HTML "style"
+    TEXT `
+
+      :root {
+        --bg: #fff; --text: #202124; --muted: #5f6368; --snip: #4d5156;
+        --link: #1a0dab; --accent: #1a73e8; --onaccent: #fff;
+        --line: #ebebeb; --field: #fff; --fline: #dfe1e5; --card: #f8f9fa;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #202124; --text: #e8eaed; --muted: #9aa0a6; --snip: #bdc1c6;
+          --link: #8ab4f8; --accent: #8ab4f8; --onaccent: #202124;
+          --line: #3c4043; --field: #303134; --fline: #5f6368; --card: #292a2d;
+        }
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+
+      a { color: inherit; text-decoration: none; }
+
+      /* ---- Wordmark ---- */
+
+      .logo {
+        display: inline-block;
+        color: var(--accent);
+        font-weight: 600;
+        font-size: 28px;
+        letter-spacing: -1.2px;
+        line-height: 1;
+      }
+
+      .logo span { color: var(--text); }
+
+      .logo.big {
+        font-size: clamp(56px, 13vw, 96px);
+        letter-spacing: -4px;
+        margin-bottom: 30px;
+      }
+
+      /* ---- Landing ---- */
+
+      .home {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 0 20px 9vh;
+      }
+
+      .tagline {
+        margin: 26px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        letter-spacing: .3px;
+      }
+
+      /* ---- Search box ---- */
+
+      .search-form {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        max-width: 584px;
+        height: 46px;
+        padding: 0 6px 0 48px;
+        border: 1px solid var(--fline);
+        border-radius: 24px;
+        background: var(--field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%239aa0a6' d='M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z'/%3E%3C/svg%3E") no-repeat 17px center / 20px;
+      }
+
+      .search-form:hover,
+      .search-form:focus-within {
+        border-color: transparent;
+        box-shadow: 0 1px 6px rgba(32, 33, 36, .28);
+      }
+
+      .search-input {
+        flex: 1;
+        min-width: 0;
+        height: 100%;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+        font-size: 16px;
+      }
+
+      .search-input::placeholder { color: var(--muted); }
+
+      .search-button {
+        height: 34px;
+        padding: 0 20px;
+        border: 0;
+        border-radius: 17px;
+        background: var(--accent);
+        color: var(--onaccent);
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+
+      .search-button:hover { filter: brightness(1.08); }
+
+      /* ---- Results header and tabs ---- */
+
+      .rh {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--bg);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .rh-row {
+        display: flex;
+        align-items: center;
+        gap: 28px;
+        padding: 18px 24px 6px;
+      }
+
+      .rh .logo { flex: none; width: 136px; font-size: 26px; }
+      .rh .search-form { max-width: 692px; }
+
+      .tabs {
+        display: flex;
+        gap: 2px;
+        margin-left: 188px;
+        overflow-x: auto;
+      }
+
+      .tab {
+        padding: 10px 14px 11px;
+        border-bottom: 3px solid transparent;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .tab:hover { color: var(--text); }
+      .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+      /* ---- Layout ---- */
+
+      .layout {
+        flex: 1;
+        display: flex;
+        align-items: flex-start;
+        gap: 60px;
+        width: 100%;
+        max-width: 1180px;
+        padding: 24px 24px 72px 188px;
+      }
+
+      .main-col { flex: 1; min-width: 0; max-width: 652px; }
+      .aside { flex: none; width: 370px; }
+
+      .section-title {
+        margin: 6px 0 16px;
+        font-size: 20px;
+        font-weight: 400;
+      }
+
+      /* ---- Results ---- */
+
+      .result { margin: 0 0 28px; }
+
+      .result-url {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        overflow: hidden;
+        white-space: nowrap;
+        font-size: 14px;
+        line-height: 20px;
+      }
+
+      .result-site { color: var(--text); }
+      .result-path { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+
+      .result-title {
+        display: block;
+        margin: 4px 0 3px;
+        color: var(--link);
+        font-size: 20px;
+        line-height: 1.3;
+      }
+
+      .result-title:hover { text-decoration: underline; }
+
+      .result-description {
+        margin: 0;
+        color: var(--snip);
+        line-height: 1.58;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      .result-meta { margin-top: 3px; color: var(--muted); font-size: 13px; }
+
+      .result-path:empty,
+      .result-description:empty,
+      .result-meta:empty { display: none; }
+
+      .more { display: none; margin: -4px 0 28px; color: var(--link); }
+      .more:hover { text-decoration: underline; }
+
+      /* On the All tab, news is a short strip of three stories */
+      .page-all .more { display: block; }
+      .page-all .news-list .result:nth-of-type(n+4) { display: none; }
+      .page-all .news-list:has(.empty-news) { display: none; }
+
+      .empty-result { padding: 12px 0; color: var(--muted); }
+      .search-error { color: #d93025; }
+
+      /* ---- Knowledge panel (Wikipedia) ---- */
+
+      .kp {
+        margin-bottom: 14px;
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--card);
+      }
+
+      .kp-img {
+        display: block;
+        width: 100%;
+        max-height: 220px;
+        margin-bottom: 14px;
+        border-radius: 8px;
+        object-fit: cover;
+      }
+
+      .kp-img[src=""] { display: none; }
+
+      .kp-title { display: block; font-size: 22px; line-height: 1.25; }
+      .kp-title:hover { text-decoration: underline; }
+      .kp-text { margin: 10px 0; color: var(--snip); line-height: 1.58; }
+      .kp-source { color: var(--muted); font-size: 12px; }
+
+      .kp:not(:first-of-type) { margin-bottom: 8px; padding: 12px 20px; }
+      .kp:not(:first-of-type) :is(.kp-img, .kp-text, .kp-source) { display: none; }
+      .kp:not(:first-of-type) .kp-title { color: var(--link); font-size: 15px; }
+
+      /* ---- Image grid ---- */
+
+      .page-images .layout { max-width: none; padding-right: 24px; }
+      .page-images .main-col { max-width: none; }
+
+      .img-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 14px;
+      }
+
+      .img-card { display: block; }
+
+      .img-card img {
+        display: block;
+        width: 100%;
+        height: 170px;
+        border-radius: 10px;
+        background: var(--card);
+        object-fit: cover;
+      }
+
+      .img-card span {
+        display: block;
+        margin-top: 6px;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ---- Footer ---- */
+
+      footer {
+        padding: 18px 24px;
+        border-top: 1px solid var(--line);
+        background: var(--card);
+        color: var(--muted);
+        font-size: 13px;
+        text-align: center;
+      }
+
+      /* ---- Small screens ---- */
+
+      @media (max-width: 800px) {
+
+        .rh-row { gap: 14px; padding: 12px 16px 4px; }
+        .rh .logo { width: auto; font-size: 22px; }
+        .tabs { margin-left: 8px; }
+
+        .layout {
+          flex-direction: column;
+          gap: 20px;
+          padding: 16px 16px 56px;
+        }
+
+        .main-col { width: 100%; max-width: none; }
+        .aside { width: 100%; }
+
+        .search-button { padding: 0 14px; }
+
+      }
+
+    `
+
+  CLOSE
+
+
+  (* ----------------------------------------------------------------- *)
+  (* BODY                                                              *)
+  (* ----------------------------------------------------------------- *)
+
+  AFTER HTML "body"
+    ATTR "class" WITH ?body_cls
+  OPEN
+
+
+    (* ============================================================= *)
+    (* LANDING PAGE                                                   *)
+    (* ============================================================= *)
+
+    IF ?query IS EMPTY
+    OPEN
+
+      HTML "main"
+        ATTR "class" WITH "home"
+      OPEN
+
+        HTML "div"
+          ATTR "class" WITH "logo big"
+        OPEN
+
+          HTML TEXT NODE "You"
+
+          AFTER HTML "span"
+            TEXT "Search"
+
+        CLOSE
+
+        AFTER HTML "form"
+          ATTR "class" WITH "search-form"
+          AND ATTR "method" WITH "GET"
+          AND ATTR "action" WITH ""
+        OPEN
+
+          HTML "input"
+            ATTR "class" WITH "search-input"
+            AND ATTR "type" WITH "search"
+            AND ATTR "name" WITH "q"
+            AND ATTR "placeholder" WITH "Search the web, news, research, code and books"
+            AND ATTR "aria-label" WITH "Search"
+            AND ATTR "maxlength" WITH "250"
+            AND ATTR "autocomplete" WITH "off"
+            AND ATTR "autofocus" WITH "autofocus"
+            AND ATTR "required" WITH "required"
+
+          AFTER HTML "button"
+            ATTR "class" WITH "search-button"
+            AND ATTR "type" WITH "submit"
+            TEXT "Search"
+
+        CLOSE
+
+        AFTER HTML "p"
+          ATTR "class" WITH "tagline"
+          TEXT "Web  ·  News  ·  Images  ·  Research  ·  Code  ·  Books"
+
+      CLOSE
+
+    CLOSE
+
+
+    (* ============================================================= *)
+    (* RESULTS PAGE                                                   *)
+    (* ============================================================= *)
+
+    AFTER IF ?query IS NOT EMPTY
+    OPEN
+
+      (* Sticky header: wordmark, search box, tabs *)
+
+      HTML "header"
+        ATTR "class" WITH "rh"
+      OPEN
+
+        HTML "div"
+          ATTR "class" WITH "rh-row"
+        OPEN
+
+          HTML "a"
+            ATTR "class" WITH "logo"
+            AND ATTR "href" WITH "?"
+          OPEN
+
+            HTML TEXT NODE "You"
+
+            AFTER HTML "span"
+              TEXT "Search"
+
+          CLOSE
+
+          AFTER HTML "form"
+            ATTR "class" WITH "search-form"
+            AND ATTR "method" WITH "GET"
+            AND ATTR "action" WITH ""
+          OPEN
+
+            HTML "input"
+              ATTR "class" WITH "search-input"
+              AND ATTR "type" WITH "search"
+              AND ATTR "name" WITH "q"
+              AND ATTR "aria-label" WITH "Search"
+              AND ATTR "value" WITH ?query
+              AND ATTR "maxlength" WITH "250"
+              AND ATTR "autocomplete" WITH "off"
+              AND ATTR "required" WITH "required"
+
+            (* Keeps the current tab when searching again *)
+
+            AFTER HTML "input"
+              ATTR "type" WITH "hidden"
+              AND ATTR "name" WITH ?keep
+              AND ATTR "value" WITH "1"
+
+            AFTER HTML "button"
+              ATTR "class" WITH "search-button"
+              AND ATTR "type" WITH "submit"
+              TEXT "Search"
+
+          CLOSE
+
+        CLOSE
+
+        AFTER HTML "nav"
+          ATTR "class" WITH "tabs"
+        OPEN
+
+          HTML "a"
+            ATTR "class" WITH ?c_all
+            AND ATTR "href" WITH ?href_all
+            TEXT "All"
+
+          AFTER HTML "a"
+            ATTR "class" WITH ?c_news
+            AND ATTR "href" WITH ?href_news
+            TEXT "News"
+
+          AFTER HTML "a"
+            ATTR "class" WITH ?c_images
+            AND ATTR "href" WITH ?href_images
+            TEXT "Images"
+
+          AFTER HTML "a"
+            ATTR "class" WITH ?c_research
+            AND ATTR "href" WITH ?href_research
+            TEXT "Research"
+
+          AFTER HTML "a"
+            ATTR "class" WITH ?c_code
+            AND ATTR "href" WITH ?href_code
+            TEXT "Code"
+
+          AFTER HTML "a"
+            ATTR "class" WITH ?c_books
+            AND ATTR "href" WITH ?href_books
+            TEXT "Books"
+
+        CLOSE
+
+      CLOSE
+
+
+      (* Results *)
+
+      AFTER HTML "main"
+        ATTR "class" WITH "layout"
+      OPEN
+
+        IF ?search_error IS NOT EMPTY
+        OPEN
+
+          HTML "p"
+            ATTR "class" WITH "search-error"
+            TEXT ?search_error
+
+        CLOSE
+
+        OR
+
+        OPEN
+
+          HTML "div"
+            ATTR "class" WITH "main-col"
+          OPEN
+
+
+            (* ----- ALL: open web (DuckDuckGo, then Mojeek) ----- *)
+
+            IF ?go_all IS NOT EMPTY
+            OPEN
+
+              HTML "section"
+                ATTR "class" WITH "web-list"
+              OPEN
+
+                IF ?web_count IS GREATER THAN 0
+                OPEN
+
+                  FOREACH ?web_results SET ?item
+                  OPEN
+
+                    HTML "article"
+                      ATTR "class" WITH "result"
+                    OPEN
+
+                      HTML "div"
+                        ATTR "class" WITH "result-url"
+                      OPEN
+
+                        HTML "span"
+                          ATTR "class" WITH "result-site"
+                          TEXT ?item("site")
+
+                        AFTER HTML "span"
+                          ATTR "class" WITH "result-path"
+                          TEXT ?item("path")
+
+                      CLOSE
+
+                      AFTER HTML "a"
+                        ATTR "class" WITH "result-title"
+                        AND ATTR "href" WITH ?item("url")
+                        TEXT ?item("title")
+
+                      AFTER HTML "p"
+                        ATTR "class" WITH "result-description"
+                        TEXT ?item("description")
+
+                      AFTER HTML "div"
+                        ATTR "class" WITH "result-meta"
+                        TEXT ?item("meta")
+
+                    CLOSE
+
+                  CLOSE
+
+                CLOSE
+
+                AFTER IF ?mojeek_count IS GREATER THAN 0
+                OPEN
+
+                  FOREACH ?mojeek_results SET ?item
+                  OPEN
+
+                    HTML "article"
+                      ATTR "class" WITH "result"
+                    OPEN
+
+                      HTML "div"
+                        ATTR "class" WITH "result-url"
+                      OPEN
+
+                        HTML "span"
+                          ATTR "class" WITH "result-site"
+                          TEXT ?item("site")
+
+                        AFTER HTML "span"
+                          ATTR "class" WITH "result-path"
+                          TEXT ?item("path")
+
+                      CLOSE
+
+                      AFTER HTML "a"
+                        ATTR "class" WITH "result-title"
+                        AND ATTR "href" WITH ?item("url")
+                        TEXT ?item("title")
+
+                      AFTER HTML "p"
+                        ATTR "class" WITH "result-description"
+                        TEXT ?item("description")
+
+                      AFTER HTML "div"
+                        ATTR "class" WITH "result-meta"
+                        TEXT ?item("meta")
+
+                    CLOSE
+
+                  CLOSE
+
+                CLOSE
+
+                AFTER IF ?web_none IS NOT EMPTY
+                OPEN
+
+                  HTML "p"
+                    ATTR "class" WITH "empty-result"
+                    TEXT "No web results found. Try different keywords."
+
+                CLOSE
+
+              CLOSE
+
+            CLOSE
+
+
+            (* ----- ALL + NEWS: news ----- *)
+
+            AFTER IF ?go_news IS NOT EMPTY
+            OPEN
+
+              HTML "section"
+                ATTR "class" WITH "news-list"
+              OPEN
+
+                HTML "h2"
+                  ATTR "class" WITH "section-title"
+                  TEXT "News"
+
+                AFTER IF ?news_count IS GREATER THAN 0
+                OPEN
+
+                  FOREACH ?news_results SET ?item
+                  OPEN
+
+                    HTML "article"
+                      ATTR "class" WITH "result"
+                    OPEN
+
+                      HTML "div"
+                        ATTR "class" WITH "result-url"
+                      OPEN
+
+                        HTML "span"
+                          ATTR "class" WITH "result-site"
+                          TEXT ?item("site")
+
+                        AFTER HTML "span"
+                          ATTR "class" WITH "result-path"
+                          TEXT ?item("path")
+
+                      CLOSE
+
+                      AFTER HTML "a"
+                        ATTR "class" WITH "result-title"
+                        AND ATTR "href" WITH ?item("url")
+                        TEXT ?item("title")
+
+                      AFTER HTML "p"
+                        ATTR "class" WITH "result-description"
+                        TEXT ?item("description")
+
+                      AFTER HTML "div"
+                        ATTR "class" WITH "result-meta"
+                        TEXT ?item("meta")
+
+                    CLOSE
+
+                  CLOSE
+
+                CLOSE
+
+                OR
+
+                OPEN
+
+                  HTML "p"
+                    ATTR "class" WITH "empty-result empty-news"
+                    TEXT "No news found for this search."
+
+                CLOSE
+
+                AFTER HTML "a"
+                  ATTR "class" WITH "more"
+                  AND ATTR "href" WITH ?href_news
+                  TEXT "More news →"
+
+              CLOSE
+
+            CLOSE
+
+
+            (* ----- IMAGES ----- *)
+
+            AFTER IF ?f_images IS NOT EMPTY
+            OPEN
+
+              IF ?img_count IS GREATER THAN 0
+              OPEN
+
+                HTML "div"
+                  ATTR "class" WITH "img-grid"
+                OPEN
+
+                  FOREACH ?img_results SET ?item
+                  OPEN
+
+                    HTML "a"
+                      ATTR "class" WITH "img-card"
+                      AND ATTR "href" WITH ?item("url")
+                    OPEN
+
+                      HTML "img"
+                        ATTR "src" WITH ?item("image")
+                        AND ATTR "alt" WITH ?item("title")
+                        AND ATTR "loading" WITH "lazy"
+
+                      AFTER HTML "span"
+                        TEXT ?item("title")
+
+                    CLOSE
+
+                  CLOSE
+
+                CLOSE
+
+              CLOSE
+
+              OR
+
+              OPEN
+
+                HTML "p"
+                  ATTR "class" WITH "empty-result"
+                  TEXT "No images found. Try different keywords."
+
+              CLOSE
+
+            CLOSE
+
+
+            (* ----- RESEARCH ----- *)
+
+            AFTER IF ?f_research IS NOT EMPTY
+            OPEN
+
+              HTML "h2"
+                ATTR "class" WITH "section-title"
+                TEXT "Research papers  ·  arXiv"
+
+              AFTER IF ?arxiv_count IS GREATER THAN 0
+              OPEN
+
+                FOREACH ?arxiv_results SET ?item
+                OPEN
+
+                  HTML "article"
+                    ATTR "class" WITH "result"
+                  OPEN
+
+                    HTML "div"
+                      ATTR "class" WITH "result-url"
+                    OPEN
+
+                      HTML "span"
+                        ATTR "class" WITH "result-site"
+                        TEXT ?item("site")
+
+                      AFTER HTML "span"
+                        ATTR "class" WITH "result-path"
+                        TEXT ?item("path")
+
+                    CLOSE
+
+                    AFTER HTML "a"
+                      ATTR "class" WITH "result-title"
+                      AND ATTR "href" WITH ?item("url")
+                      TEXT ?item("title")
+
+                    AFTER HTML "p"
+                      ATTR "class" WITH "result-description"
+                      TEXT ?item("description")
+
+                    AFTER HTML "div"
+                      ATTR "class" WITH "result-meta"
+                      TEXT ?item("meta")
+
+                  CLOSE
+
+                CLOSE
+
+              CLOSE
+
+              OR
+
+              OPEN
+
+                HTML "p"
+                  ATTR "class" WITH "empty-result"
+                  TEXT "No research papers found."
+
+              CLOSE
+
+            CLOSE
+
+
+            (* ----- CODE: GitHub ----- *)
+
+            AFTER IF ?f_code IS NOT EMPTY
+            OPEN
+
+              HTML "h2"
+                ATTR "class" WITH "section-title"
+                TEXT "Repositories  ·  GitHub"
+
+              AFTER IF ?gh_count IS GREATER THAN 0
+              OPEN
+
+                FOREACH ?gh_results SET ?item
+                OPEN
+
+                  HTML "article"
+                    ATTR "class" WITH "result"
+                  OPEN
+
+                    HTML "div"
+                      ATTR "class" WITH "result-url"
+                    OPEN
+
+                      HTML "span"
+                        ATTR "class" WITH "result-site"
+                        TEXT ?item("site")
+
+                      AFTER HTML "span"
+                        ATTR "class" WITH "result-path"
+                        TEXT ?item("path")
+
+                    CLOSE
+
+                    AFTER HTML "a"
+                      ATTR "class" WITH "result-title"
+                      AND ATTR "href" WITH ?item("url")
+                      TEXT ?item("title")
+
+                    AFTER HTML "p"
+                      ATTR "class" WITH "result-description"
+                      TEXT ?item("description")
+
+                    AFTER HTML "div"
+                      ATTR "class" WITH "result-meta"
+                      TEXT ?item("meta")
+
+                  CLOSE
+
+                CLOSE
+
+              CLOSE
+
+              OR
+
+              OPEN
+
+                HTML "p"
+                  ATTR "class" WITH "empty-result"
+                  TEXT "No repositories found (GitHub limits anonymous searches to 10 per minute)."
+
+              CLOSE
+
+
+              (* Stack Overflow *)
+
+              AFTER HTML "h2"
+                ATTR "class" WITH "section-title"
+                TEXT "Questions  ·  Stack Overflow"
+
+              AFTER IF ?so_count IS GREATER THAN 0
+              OPEN
+
+                FOREACH ?so_results SET ?item
+                OPEN
+
+                  HTML "article"
+                    ATTR "class" WITH "result"
+                  OPEN
+
+                    HTML "div"
+                      ATTR "class" WITH "result-url"
+                    OPEN
+
+                      HTML "span"
+                        ATTR "class" WITH "result-site"
+                        TEXT ?item("site")
+
+                      AFTER HTML "span"
+                        ATTR "class" WITH "result-path"
+                        TEXT ?item("path")
+
+                    CLOSE
+
+                    AFTER HTML "a"
+                      ATTR "class" WITH "result-title"
+                      AND ATTR "href" WITH ?item("url")
+                      TEXT ?item("title")
+
+                    AFTER HTML "p"
+                      ATTR "class" WITH "result-description"
+                      TEXT ?item("description")
+
+                    AFTER HTML "div"
+                      ATTR "class" WITH "result-meta"
+                      TEXT ?item("meta")
+
+                  CLOSE
+
+                CLOSE
+
+              CLOSE
+
+              OR
+
+              OPEN
+
+                HTML "p"
+                  ATTR "class" WITH "empty-result"
+                  TEXT "No questions found."
+
+              CLOSE
+
+            CLOSE
+
+
+            (* ----- BOOKS ----- *)
+
+            AFTER IF ?f_books IS NOT EMPTY
+            OPEN
+
+              HTML "h2"
+                ATTR "class" WITH "section-title"
+                TEXT "Books  ·  Open Library"
+
+              AFTER IF ?book_count IS GREATER THAN 0
+              OPEN
+
+                FOREACH ?book_results SET ?item
+                OPEN
+
+                  HTML "article"
+                    ATTR "class" WITH "result"
+                  OPEN
+
+                    HTML "div"
+                      ATTR "class" WITH "result-url"
+                    OPEN
+
+                      HTML "span"
+                        ATTR "class" WITH "result-site"
+                        TEXT ?item("site")
+
+                      AFTER HTML "span"
+                        ATTR "class" WITH "result-path"
+                        TEXT ?item("path")
+
+                    CLOSE
+
+                    AFTER HTML "a"
+                      ATTR "class" WITH "result-title"
+                      AND ATTR "href" WITH ?item("url")
+                      TEXT ?item("title")
+
+                    AFTER HTML "p"
+                      ATTR "class" WITH "result-description"
+                      TEXT ?item("description")
+
+                    AFTER HTML "div"
+                      ATTR "class" WITH "result-meta"
+                      TEXT ?item("meta")
+
+                  CLOSE
+
+                CLOSE
+
+              CLOSE
+
+              OR
+
+              OPEN
+
+                HTML "p"
+                  ATTR "class" WITH "empty-result"
+                  TEXT "No books found."
+
+              CLOSE
+
+            CLOSE
+
+          CLOSE
+
+
+          (* ----- KNOWLEDGE PANEL: Wikipedia (All tab) ----- *)
+
+          AFTER IF ?wiki_count IS GREATER THAN 0
+          OPEN
+
+            HTML "aside"
+              ATTR "class" WITH "aside"
+            OPEN
+
+              FOREACH ?wiki_results SET ?item
+              OPEN
+
+                HTML "article"
+                  ATTR "class" WITH "kp"
+                OPEN
+
+                  HTML "img"
+                    ATTR "class" WITH "kp-img"
+                    AND ATTR "src" WITH ?item("image")
+                    AND ATTR "alt" WITH ?item("title")
+
+                  AFTER HTML "a"
+                    ATTR "class" WITH "kp-title"
+                    AND ATTR "href" WITH ?item("url")
+                    TEXT ?item("title")
+
+                  AFTER HTML "p"
+                    ATTR "class" WITH "kp-text"
+                    TEXT ?item("description")
+
+                  AFTER HTML "a"
+                    ATTR "class" WITH "kp-source"
+                    AND ATTR "href" WITH ?item("url")
+                    TEXT "Wikipedia"
+
+                CLOSE
+
+              CLOSE
+
+            CLOSE
+
+          CLOSE
+
+        CLOSE
+
+      CLOSE
+
+    CLOSE
+
+
+    (* FOOTER *)
+
+    AFTER HTML "footer"
+      TEXT "YouSearch  ·  Web  ·  News  ·  Images  ·  Research  ·  Code  ·  Books"
+
+  CLOSE
+
+CLOSE
+
+
+(* ================================================================= *)
+(* 5. RETURN PAGE                                                     *)
+(* ================================================================= *)
+
+AFTER EMIT ?page
+
+(* ================================================================= *)
+(* END YOUSEARCH                                                      *)
+(* ================================================================= *)
