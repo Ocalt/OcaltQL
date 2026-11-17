@@ -2,7 +2,7 @@
 
 A library of complete programs written in OcaltQL. Each project runs from a script you can read in one sitting, and each one shows something OcaltQL does that other stacks need many tools to do.
 
-OcaltQL is a verb-first execution language for the entire stack. The language reference and tutorial, which is the specification, are at https://ql.ocalt.com. Documentation is at https://ocalt.com/docs/oql. This repository holds projects written in the language. It does not hold the language.
+OcaltQL is a verb-first execution language for the entire stack. The language reference and tutorial, which is the specification, are at https://ql.ocalt.com. Documentation is at https://ocalt.com/docs/oql. This repository holds projects written in the language, and the formal grammar of the language in [`grammar`](grammar/README.md). The tutorial remains the specification.
 
 ## Projects
 
