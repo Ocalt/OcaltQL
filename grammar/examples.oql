@@ -5,7 +5,7 @@ STRING "Hello World" SET ?message
 AFTER EMIT ?message
 
 (* IF / OR IF / OR fallback. *)
-IF ?score IS GREATER THAN OR EQUAL TO 90
+AFTER IF ?score IS GREATER THAN OR EQUAL TO 90
 OPEN
   EMIT "A"
 CLOSE
@@ -19,26 +19,26 @@ OPEN
 CLOSE
 
 (* Numeric range loop with STEP. *)
-LOOP 0 TO 10 STEP 2 SET ?index
+AFTER LOOP 0 TO 10 STEP 2 SET ?index
 OPEN
   EMIT ?index
 CLOSE
 
 (* FOREACH over an array/object. *)
-FOREACH ?rows SET ?key AS ?row
+AFTER FOREACH ?rows SET ?key AS ?row
 OPEN
   EMIT ?key & ": " & ?row
 CLOSE
 
 (* Object construction, property selectors, and OF access. *)
-NEW OBJECT ["name" AS "Alice" AND "age" AS 30] SET ?person
+AFTER NEW OBJECT ["name" AS "Alice" AND "age" AS 30] SET ?person
 AFTER SET ?person("address") AS NEW OBJECT ["city" AS "Cape Town"]
 AFTER SET ?person("name") AS "Bob"
 AFTER SET "city" OF "address" OF ?person AS "Johannesburg"
 AFTER EMIT ?person
 
 (* Operation definition with typed required/default parameters and RETURN. *)
-NEW OPERATION greet WITH ?name AS STRING REQUIRED AND ?punctuation AS STRING DEFAULT "!"
+AFTER NEW OPERATION greet WITH ?name AS STRING REQUIRED AND ?punctuation AS STRING DEFAULT "!"
 OPEN
   RETURN "Hello " & ?name & ?punctuation
 CLOSE
@@ -46,24 +46,24 @@ AFTER RUN greet WITH "World" SET ?greeting
 AFTER EMIT ?greeting
 
 (* Context references inside nested execution. *)
-IF SOME ?rows ARE EQUAL TO "target"
+AFTER IF SOME ?rows ARE EQUAL TO "target"
 OPEN
   EMIT !THIS('some')
   AFTER EMIT !THIS('some')(0)
 CLOSE
 
 (* Persistent and consistent storage forms. *)
-SET PERSISTENT ?counter AS 0
+AFTER SET PERSISTENT ?counter AS 0
 AFTER CONSISTENT "counter" SET ?counter
 AFTER STRING "v1" SET CONSISTENT "schema-version"
 AFTER UNSET PERSISTENT ?counter
 
 (* Date arithmetic and difference. *)
-CALCULATE ?start + 3 DAYS SET ?later
+AFTER CALCULATE ?start + 3 DAYS SET ?later
 AFTER CALCULATE ?end - ?start AS DAYS SET ?duration
 
 (* OOP class declaration, required/default fields, METHOD body, and SPAWN. *)
-NEW CLASS Person
+AFTER NEW CLASS Person
 WITH "name" AS STRING REQUIRED
 AND "age" AS NUMBER DEFAULT 0
 AND "email" AS STRING
