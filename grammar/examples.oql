@@ -1,0 +1,77 @@
+(* OcaltQL grammar fixtures. These examples illustrate syntax, not runtime output. *)
+
+(* Basic chain, string result, and EMIT. *)
+STRING "Hello World" SET ?message
+AFTER EMIT ?message
+
+(* IF / OR IF / OR fallback. *)
+IF ?score IS GREATER THAN OR EQUAL TO 90
+OPEN
+  EMIT "A"
+CLOSE
+OR IF ?score IS GREATER THAN OR EQUAL TO 60
+OPEN
+  EMIT "B"
+CLOSE
+OR
+OPEN
+  EMIT "C"
+CLOSE
+
+(* Numeric range loop with STEP. *)
+LOOP 0 TO 10 STEP 2 SET ?index
+OPEN
+  EMIT ?index
+CLOSE
+
+(* FOREACH over an array/object. *)
+FOREACH ?rows SET ?key AS ?row
+OPEN
+  EMIT ?key & ": " & ?row
+CLOSE
+
+(* Object construction, property selectors, and OF access. *)
+NEW OBJECT ["name" AS "Alice" AND "age" AS 30] SET ?person
+AFTER SET ?person("address") AS NEW OBJECT ["city" AS "Cape Town"]
+AFTER SET ?person("name") AS "Bob"
+AFTER SET "city" OF "address" OF ?person AS "Johannesburg"
+AFTER EMIT ?person
+
+(* Operation definition with typed required/default parameters and RETURN. *)
+NEW OPERATION greet WITH ?name AS STRING REQUIRED AND ?punctuation AS STRING DEFAULT "!"
+OPEN
+  RETURN "Hello " & ?name & ?punctuation
+CLOSE
+AFTER RUN greet WITH "World" SET ?greeting
+AFTER EMIT ?greeting
+
+(* Context references inside nested execution. *)
+IF SOME ?rows ARE EQUAL TO "target"
+OPEN
+  EMIT !THIS('some')
+  AFTER EMIT !THIS('some')(0)
+CLOSE
+
+(* Persistent and consistent storage forms. *)
+SET PERSISTENT ?counter AS 0
+AFTER CONSISTENT "counter" SET ?counter
+AFTER STRING "v1" SET CONSISTENT "schema-version"
+AFTER UNSET PERSISTENT ?counter
+
+(* Date arithmetic and difference. *)
+CALCULATE ?start + 3 DAYS SET ?later
+AFTER CALCULATE ?end - ?start AS DAYS SET ?duration
+
+(* OOP class declaration, required/default fields, METHOD body, and SPAWN. *)
+NEW CLASS Person
+WITH "name" AS STRING REQUIRED
+AND "age" AS NUMBER DEFAULT 0
+AND "email" AS STRING
+AND "greet" AS METHOD
+OPEN
+  EMIT "Hello, I am " & "name" OF THIS
+CLOSE
+AFTER SPAWN Person
+WITH "name" AS "Alice"
+AND "age" AS 30
+SET ?alice

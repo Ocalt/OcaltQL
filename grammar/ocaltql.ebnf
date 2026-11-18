@@ -1,0 +1,458 @@
+(*
+OcaltQL — derived core grammar (EBNF)
+Source of truth: https://ql.ocalt.com/tutorial/
+Language reference: https://ql.ocalt.com/tutorial/verb-reference
+
+This grammar formalizes the documented lexical and execution structure, the
+core language constructs, and a deliberately abstract extension-command rule.
+The extension rule is NOT a replacement for each verb's signature in the
+Verb Reference and the domain tutorials. See README.md before using this as a
+validator.
+
+Lexical conventions:
+  • Every keyword shown in double quotes is case-insensitive.
+  • Identifiers and variable names are preserved exactly; variable names are
+    case-sensitive. This grammar uses the conservative ASCII identifier form.
+  • Whitespace and comments are skipped between tokens. Newlines and
+    indentation have no statement-boundary meaning.
+  • A full stop (.) may optionally follow a statement; it is not a chain
+    operator or a required statement delimiter.
+*)
+
+program              = trivia, chain, trivia ;
+
+(* First statement is bare. Every later statement needs AFTER, AND, or OR. *)
+chain                = statement, [ "." ],
+                       { required-space, chain-link, required-space,
+                         statement, [ "." ] } ;
+chain-link           = "AFTER" | "AND" | "OR" ;
+
+statement            = if-statement
+                     | while-statement
+                     | loop-statement
+                     | foreach-statement
+                     | switch-statement
+                     | operation-definition
+                     | class-definition
+                     | spawn-statement
+                     | persistent-storage-statement
+                     | core-statement
+                     | extension-statement ;
+
+(* IF's OR IF / OR OPEN forms are part of the IF construct, not ELSE syntax. *)
+if-statement         = "IF", required-space, condition,
+                       required-space, block,
+                       { required-space, "OR", required-space, "IF", required-space,
+                         condition, required-space, block },
+                       [ required-space, "OR", required-space, block ] ;
+
+while-statement      = "WHILE", required-space, condition,
+                       required-space, block ;
+
+loop-statement       = "LOOP", required-space, value,
+                       required-space, "TO", required-space, value,
+                       [ required-space, "STEP", required-space, signed-number ],
+                       required-space, "SET", required-space, variable,
+                       required-space, block ;
+
+foreach-statement    = "FOREACH", required-space, access-path,
+                       required-space, "SET", required-space, variable,
+                       [ required-space, "AS", required-space, variable ],
+                       required-space, block ;
+
+switch-statement     = "SWITCH", required-space, value,
+                       required-space, "OPEN", required-space,
+                       switch-case, { required-space, switch-case },
+                       required-space, "CLOSE" ;
+switch-case          = "CASE", required-space, value,
+                       [ required-space, chain ]
+                     | "DEFAULT", [ required-space, chain ] ;
+
+operation-definition = "NEW", required-space, [ "PERSISTENT", required-space ],
+                       "OPERATION", required-space, identifier,
+                       [ required-space, "WITH", required-space, operation-parameter,
+                         { required-space, "AND", required-space, operation-parameter } ],
+                       required-space, block ;
+operation-parameter  = variable,
+                       [ required-space, "AS", required-space,
+                         ( "STRING" | "NUMBER" | "BOOL" | "DATE" ),
+                         [ required-space, ( "REQUIRED" | "DEFAULT", required-space, value ) ] ] ;
+
+(* Class declarations and instance creation, from the OOP tutorial. *)
+class-definition     = "NEW", required-space, "CLASS", required-space,
+                       identifier, required-space, "WITH", required-space,
+                       class-member,
+                       { required-space, "AND", required-space, class-member },
+                       required-space, block ;
+class-member         = string-literal, required-space, "AS", required-space,
+                       ( "STRING" | "NUMBER" | "BOOL" | "DATE" | "METHOD" ),
+                       [ required-space,
+                         ( "REQUIRED" | "DEFAULT", required-space, value ) ] ;
+spawn-statement      = "SPAWN", required-space, identifier,
+                       [ required-space, "WITH", required-space,
+                         class-argument,
+                         { required-space, "AND", required-space, class-argument } ],
+                       [ result-clause ] ;
+class-argument       = string-literal, required-space, "AS", required-space, value ;
+
+persistent-storage-statement
+                    = "SET", required-space, "PERSISTENT", required-space,
+                      variable, required-space, "AS", required-space, value
+                    | "CONSISTENT", required-space, value, result-clause
+                    | "START", required-space, "PERSIST"
+                    | "KILL", required-space, "PERSIST" ;
+
+block                = "OPEN", required-space,
+                       [ chain, required-space ], "CLOSE" ;
+
+core-statement       = emit-statement
+                     | string-statement
+                     | number-statement
+                     | set-statement
+                     | unset-statement
+                     | variable-copy-statement
+                     | calculate-statement
+                     | return-statement
+                     | run-statement
+                     | exit-statement
+                     | break-statement
+                     | continue-statement
+                     | catch-statement
+                     | warning-statement
+                     | array-object-statement
+                     | string-operation
+                     | date-time-statement
+                     | conversion-statement
+                     | network-statement
+                     | file-statement
+                     | header-statement
+                     | wait-sleep-statement ;
+
+emit-statement       = "EMIT", required-space, value-expression ;
+string-statement     = "STRING", required-space, value-expression,
+                       result-clause ;
+number-statement     = "NUMBER", required-space, value,
+                       result-clause ;
+
+set-statement       = "SET", required-space, assignment-target,
+                       required-space, "AS", required-space, value ;
+unset-statement     = "UNSET", required-space, [ "PERSISTENT", required-space ], variable ;
+variable-copy-statement
+                    = "VARIABLE", required-space, reference,
+                      required-space, "SET", required-space, variable ;
+
+assignment-target   = reference | of-reference ;
+access-path         = reference | of-reference ;
+
+calculate-statement = "CALCULATE", required-space,
+                      ( math-expression
+                      | date-calculation
+                      | date-difference ),
+                      [ result-clause ] ;
+date-difference       = reference, required-space, "-", required-space,
+                        reference, required-space, "AS", required-space,
+                        ( "DAYS" | "HOURS" | "YEARS" ) ;
+
+return-statement    = "RETURN", [ required-space, value-expression ] ;
+run-statement       = "RUN", required-space, [ "PERSISTENT", required-space ],
+                      identifier,
+                      [ required-space, "WITH", required-space, value,
+                        { required-space, "AND", required-space, value } ],
+                      [ result-clause ] ;
+exit-statement      = "EXIT", [ required-space, value ] ;
+break-statement     = "BREAK" ;
+continue-statement  = "CONTINUE" ;
+catch-statement     = "CATCH", required-space, "ERROR",
+                      [ result-clause ] ;
+warning-statement   = "WARNING", required-space, value ;
+
+result-clause       = required-space, "SET", required-space, variable
+                    | required-space, "SET", required-space, "PROMISE",
+                      required-space, variable
+                    | required-space, "SET", required-space, "PERSISTENT",
+                      required-space, variable
+                    | required-space, "SET", required-space, "CONSISTENT",
+                      required-space, value ;
+
+array-object-statement
+                    = "NEW", required-space, "ARRAY", result-clause
+                    | "NEW", required-space, "MULTIARRAY", result-clause
+                    | "NEW", required-space, "OBJECT",
+                      [ "[", object-fields, "]" ], result-clause
+                    | "APPEND", required-space, value,
+                      required-space, "TO", required-space, reference
+                    | "APPEND", required-space, value,
+                      required-space, "AS", required-space, value,
+                      required-space, "TO", required-space, reference
+                    | "COUNT", required-space, reference, result-clause
+                    | "COLLAPSE", required-space, reference, result-clause
+                    | "FLATTEN", required-space, reference, result-clause
+                    | "KEYS", required-space, reference, result-clause
+                    | "VALUES", required-space, reference, result-clause
+                    | "REMOVE", required-space, "KEY", required-space, value,
+                      required-space, "FROM", required-space, reference,
+                      [ result-clause ]
+                    | "SEARCH", required-space, "ARRAY", required-space, reference,
+                      required-space, "FOR", required-space, value, result-clause
+                    | "SEARCH", required-space, "OBJECT", required-space, reference,
+                      required-space, "FOR", required-space, value, result-clause
+                    | "JOIN", [ required-space, "ARRAY" ], required-space, reference,
+                      [ required-space, "WITH", required-space, value ], result-clause
+                    | "SLICE", required-space, reference,
+                      required-space, "FROM", required-space, value,
+                      required-space, "TO", required-space, value, result-clause
+                    | "SORT", required-space, reference,
+                      [ required-space, ( "ASCENDING" | "DESCENDING" ) ],
+                      [ required-space, "BY", required-space, value ],
+                      [ result-clause ]
+                    | "MERGE", required-space, ( "ARRAY" | "OBJECT" ),
+                      required-space, reference, required-space, "WITH",
+                      required-space, reference, result-clause
+                    | "REVERSE", required-space, "ARRAY", required-space,
+                      reference, result-clause ;
+
+object-fields       = object-field,
+                      { required-space, "AND", required-space, object-field } ;
+object-field        = string-literal, required-space, "AS", required-space, value ;
+
+string-operation    = "LENGTH", required-space, value, result-clause
+                    | "STRING", required-space, "UPPERCASE", required-space,
+                      value, result-clause
+                    | "STRING", required-space, "LOWERCASE", required-space,
+                      value, result-clause
+                    | "TRIM", required-space, "STRING", required-space,
+                      value, result-clause
+                    | "REVERSE", required-space, "STRING", required-space,
+                      value, result-clause
+                    | "REPLACE", required-space, "STRING", required-space,
+                      "ALL", required-space, value, required-space, "WITH",
+                      required-space, value, required-space, "WHERE",
+                      required-space, value, [ result-clause ]
+                    | "REPLACE", required-space, "STRING", required-space,
+                      "ONCE", required-space, value, required-space, "WITH",
+                      required-space, value, required-space, "WHERE",
+                      required-space, value, [ result-clause ]
+                    | "REPLACE", required-space, "STRING", required-space,
+                      "FROM", required-space, value, required-space, "TO",
+                      required-space, value, required-space, "WITH",
+                      required-space, value, required-space, "WHERE",
+                      required-space, value, [ result-clause ]
+                    | "SEARCH", required-space, "STRING", required-space,
+                      value, required-space, "FOR", required-space, value,
+                      result-clause
+                    | "SELECT", required-space, "STRING", required-space,
+                      value, required-space, "FROM", required-space, value,
+                      required-space, "TO", required-space, value,
+                      result-clause
+                    | "SPLIT", required-space, value, required-space, "BY",
+                      required-space, value, result-clause ;
+
+date-time-statement = "NEW", required-space, "DATE",
+                       [ required-space, "AND", required-space, "TIME" ],
+                       [ required-space, "FROM", required-space, value ],
+                       result-clause
+                     | "NEW", required-space, "TIME",
+                       [ required-space, "FROM", required-space, value ],
+                       result-clause
+                     | "GET", required-space, value, required-space,
+                       ( ( "DAY" | "MONTH" ), required-space,
+                         ( "FULLNAME" | "SHORTNAME" )
+                       | "YEAR" | "MONTH" | "DAY" | "HOUR" | "MINUTE" |
+                         "SECOND" | "TIMESTAMP" ), result-clause
+                     | "FORMAT", required-space,
+                       ( "DATE" | "TIME" | "DATE AND TIME" ), required-space,
+                       value, required-space, "AS", required-space,
+                       string-literal, result-clause ;
+
+date-calculation    = reference, required-space, ( "+" | "-" ),
+                      required-space, value, required-space,
+                      ( "DAY" | "DAYS" | "WEEK" | "WEEKS" | "MONTH" |
+                        "MONTHS" | "YEAR" | "YEARS" | "MINUTES" | "HOURS" )
+                    | reference, required-space, ( "FIRST" | "LAST" ),
+                      required-space, "DAY" ;
+
+conversion-statement = "CAST", required-space, value, required-space, "AS",
+                       required-space, ( "STRING" | "NUMBER" | "BOOL" | "DATE" |
+                         "JSON" | "OQLOBJECT" ), [ required-space, "FROM",
+                         required-space, value ], [ result-clause ]
+                     | "PARSE", required-space, value, required-space, "AS",
+                       required-space, identifier, result-clause
+                     | ( "ENCODE" | "DECODE" ), required-space, value,
+                       required-space, "AS", required-space, identifier,
+                       [ required-space, "FROM", required-space, identifier ],
+                       [ result-clause ]
+                     | "CONVERT", required-space, identifier,
+                       required-space, value,
+                       [ required-space, "TO", required-space, value ],
+                       [ result-clause ] ;
+
+network-statement   = "FETCH", required-space, value,
+                       [ required-space, "METHOD", required-space, value ],
+                       { required-space, ( "HEADER" | "BODY" | "USER AGENT" |
+                           "IP" | "PROXY" | "TIMEOUT" | "INTO" ),
+                         required-space, value },
+                       [ required-space, "SECONDS" ], [ result-clause ]
+                     | "CURL", required-space, value,
+                       [ required-space, "METHOD", required-space, value ],
+                       { required-space, ( "HEADER" | "BODY" | "USER AGENT" |
+                           "IP" | "TIMEOUT" | "INTO" ),
+                         required-space, value },
+                       [ required-space, "SECONDS" ], [ result-clause ] ;
+
+file-statement      = "FILE", required-space, "READ", required-space,
+                       value, [ result-clause ]
+                     | "FILE", required-space, "WRITE", required-space,
+                       value, required-space, "TO", required-space, value
+                     | "FILE", required-space, ( "DELETE" | "MKDIR" | "LIST" |
+                         "EXISTS" | "STAT" ), required-space, value,
+                       [ result-clause ]
+                     | "FILE", required-space, ( "MOVE" | "COPY" ),
+                       required-space, value, required-space, "TO",
+                       required-space, value ;
+
+header-statement    = "HEADER", required-space, value,
+                       [ required-space, "AS", required-space, value ] ;
+wait-sleep-statement = "WAIT", required-space, "FOR", required-space,
+                       reference, [ required-space, value, required-space, "SECONDS" ],
+                       [ result-clause ]
+                     | "SLEEP", required-space, value,
+                       [ required-space, ( "MILLISECONDS" | "SECONDS" |
+                           "MINUTES" | "HOURS" ) ] ;
+
+(*
+Conditions: AND has higher precedence than OR. The word OR inside
+"GREATER THAN OR EQUAL TO" / "LESS THAN OR EQUAL TO" belongs to the
+comparison operator and is not a logical connector.
+*)
+condition            = condition-and, { required-space, "OR", required-space,
+                                         condition-and } ;
+condition-and        = predicate, { required-space, "AND", required-space,
+                                     predicate } ;
+predicate            = [ "SOME", required-space ], value,
+                       ( required-space, comparison
+                       | required-space, "CONTAINS", required-space, value )
+                     | value ;
+comparison           = ( "IS" | "ARE" ), required-space,
+                       ( "NOT", required-space, "IDENTICAL TO", required-space, value
+                       | "NOT", required-space, "EQUAL TO", required-space, value
+                       | "IDENTICAL TO", required-space, value
+                       | "EQUAL TO", required-space, value
+                       | "GREATER THAN OR EQUAL TO", required-space, value
+                       | "LESS THAN OR EQUAL TO", required-space, value
+                       | "GREATER THAN", required-space, value
+                       | "LESS THAN", required-space, value
+                       | "NOT SET" | "SET"
+                       | "NOT ARRAY" | "ARRAY"
+                       | "NOT EMPTY" | "EMPTY"
+                       | "NOT NULL" | "NULL"
+                       | "WAITING" | "INFINITE" | "TRUE" | "FALSE" ) ;
+
+value-expression    = value, { trivia, "&", trivia, value } ;
+value                = literal
+                     | reference
+                     | persistent-reference
+                     | of-reference
+                     | array-literal
+                     | object-value
+                     | inline-reference
+                     | "(", value, ")" ;
+
+literal              = string-literal | signed-number | "TRUE" | "FALSE" | "NULL" ;
+string-literal       = double-quoted-string | single-quoted-string | raw-string ;
+double-quoted-string = ? opening double-quote ?, { quoted-escape | ? any character except double-quote and backslash ? }, ? closing double-quote ? ;
+single-quoted-string = ? opening single-quote ?, { quoted-escape | ? any character except single-quote and backslash ? }, ? closing single-quote ? ;
+quoted-escape        = "\\", ? any next character ? ;
+raw-string           = "`", { escaped-backtick | ? any character except backtick ? }, "`" ;
+escaped-backtick     = "\\`" ;
+
+reference            = variable-reference | global-reference | this-context-reference | this-object-reference ;
+variable-reference  = variable, { selector } ;
+variable              = "?", identifier ;
+global-reference    = "!", identifier, { selector } ;
+persistent-reference = "PERSISTENT", required-space, variable, { selector } ;
+consistent-reference = "CONSISTENT", required-space, value ;
+this-context-reference = "!", "THIS", "(", [ value ], ")", { selector } ;
+this-object-reference = "THIS", { selector } ;
+selector             = "(", value, ")" ;
+of-reference         = value, required-space, "OF", required-space,
+                       ( value, required-space, "OF", required-space )*,
+                       reference ;
+
+array-literal        = "[", [ value,
+                       { required-space, "AND", required-space, value } ],
+                       "]" ;
+object-value         = "NEW", required-space, "OBJECT",
+                       [ "[", object-fields, "]" ] ;
+inline-reference     = "[", inline-operation, "]" ;
+inline-operation     = "CALCULATE", required-space, math-expression
+                     | "RUN", required-space, [ "PERSISTENT", required-space ], identifier,
+                       [ required-space, "WITH", required-space, value,
+                         { required-space, "AND", required-space, value } ]
+                     | consistent-reference
+                     | feature-head, { required-space, feature-argument }
+                     | value-expression ;
+
+math-expression      = additive-expression ;
+additive-expression  = multiplicative-expression,
+                       { trivia, ( "+" | "-" ), trivia,
+                         multiplicative-expression } ;
+multiplicative-expression
+                    = unary-expression,
+                       { trivia, ( "*" | "/" ), trivia,
+                         unary-expression } ;
+unary-expression     = [ "+" | "-" ], math-primary ;
+math-primary         = signed-number
+                     | reference
+                     | function-call
+                     | "(", math-expression, ")"
+                     | inline-reference ;
+function-call        = identifier, "(", [ math-expression,
+                       { ",", math-expression } ], ")" ;
+signed-number        = [ "+" | "-" ], number ;
+number               = digit, { digit }, [ ".", digit, { digit } ],
+                       [ ( "e" | "E" ), [ "+" | "-" ], digit, { digit } ] ;
+
+generic-command      = [ variable-reference, required-space ], feature-head,
+                       { required-space, feature-argument },
+                       [ result-clause ] ;
+extension-statement  = generic-command ;
+feature-head         = "ABSOLUTE" | "ACCOUNT" | "ADD" | "ANIMATE" | "APP" | "APPEND" | "APPLICATE" | "ASSIGN"
+                       | "AUDIO" | "AUTH" | "BACKGROUND" | "BIM" | "BLOCK" | "BOOK" | "BROWSER" | "BRIDGE"
+                       | "BUILD" | "CACHE" | "CALCULATE" | "CALENDAR" | "CALL" | "CANCEL" | "CAST" | "CHAT"
+                       | "CHECK" | "CLASS" | "CLEAR" | "CLONE" | "CODE" | "COLUMN" | "COMMIT" | "COMPRESS"
+                       | "CONFIG" | "CONNECT" | "CONSISTENT" | "CONVERT" | "COOKIE" | "COUNT" | "CRON" | "CURRENCY"
+                       | "DATABASE" | "DB" | "CASE" | "DEFAULT" | "DECODE" | "DECRYPT" | "DEDUPLICATE" | "DELETE"
+                       | "DESCRIBE" | "DIRECTIVE" | "DIVIDE" | "DNS" | "DOC" | "DOMAIN" | "DOWNLOAD" | "DRIVE"
+                       | "DROP" | "EDITOR" | "EMAIL" | "EMIT" | "ENCODE" | "ENCRYPT" | "EXIT" | "EXPORT"
+                       | "EXTERNAL" | "FACTORIAL" | "FETCH" | "FIBONACCI" | "FILE" | "FILTER" | "FIND" | "FIRST"
+                       | "FLATTEN" | "FOLDER" | "FORGET" | "FORMAT" | "FTP" | "GATHER" | "GENERATE" | "GEOIP"
+                       | "GET" | "GRAPH" | "GRAPHIC" | "GROUP" | "HASH" | "HEADER" | "HTML" | "HTTP"
+                       | "IMAGE" | "IMAP" | "IMPORT" | "INCLUDE" | "INSERT" | "JOIN" | "JSON" | "KEY"
+                       | "KILL" | "LABEL" | "LIST" | "LOAD" | "LOG" | "LOGARITHM" | "MAIL" | "MAP"
+                       | "MATERIAL" | "MATRIX" | "MEDIA" | "MESH" | "MODULO" | "MOVE" | "MULTIPLY" | "MULTIARRAY"
+                       | "NETWORK" | "NOTIFICATION" | "NOTIFY" | "NEW" | "OCR" | "ONBROWSER" | "OPERATION" | "OUTBOUND" | "PARSE"
+                       | "PASSWORD" | "PIXEL" | "POWER" | "PRESENTATION" | "PRIME" | "PUSH" | "QR" | "QUERY"
+                       | "RAISE" | "RANDOMIZE" | "READ" | "RECALL" | "RECEIVE" | "REDIRECT" | "REMEMBER" | "REMIND"
+                       | "REMOVE" | "REPLACE" | "RESET" | "RESIZE" | "RESTORE" | "RETURN" | "REVERSE" | "RICH"
+                       | "ROUND" | "RUN" | "SAVE" | "SCHEDULE" | "SCENE" | "SEARCH" | "SELECT" | "SEND"
+                       | "SHARE" | "SHOW" | "SIM" | "SLEEP" | "SLICE" | "SLIDE" | "SORT" | "SPAWN"
+                       | "SPLIT" | "SQUARE" | "SSH" | "START" | "STATUS" | "STORAGE" | "STRING" | "SUBDOMAIN"
+                       | "SUBTRACT" | "SUM" | "SYNC" | "TABLE" | "TAG" | "TCP" | "TIME" | "TIMELINE"
+                       | "TOKEN" | "TRANSCODE" | "TRIM" | "UDP" | "UNSET" | "UPDATE" | "UPLOAD" | "USER"
+                       | "UX" | "VERIFY" | "VIDEO" | "WAIT" | "WATCH" | "WEATHER" | "WEBSOCKET" | "WEBASSEMBLY"
+                       | "WEBHOOK" | "WEBRTC" | "WRITE" ;
+feature-argument     = value | feature-option | "," | ":" | "=" | "/" | "-" | "+" | "&" ;
+
+feature-option      = "SOLVE" | "SMOOTH" | "ROUTE" | "RENDER" | "RAW" | "PRIMITIVE" | "PORTS" | "POP3" | "POLYGON" | "POINT" | "PCB" | "OPEN" | "MATERIAL" | "LIVE" | "EXPOSE" | "BOARD" | "ATTENDEE" | "BIND" | "COMPARE" | "DOMAINS" | "LOGIN" | "REGISTER" | "REVOKE" | "SSL" | "UNBIND" | "JOIN" | "ABSOLUTE" | "ACCOUNT" | "ADD" | "ALL" | "ANIMATE" | "APP" | "APPLICATE" | "AS" | "ASSIGN" | "AT" | "AUDIO" | "AUTH" | "BACKGROUND" | "BASE" | "BASE64" | "BIM" | "BLOCK" | "BODY" | "BOOK" | "BOOL" | "BRIDGE" | "BROWSER" | "BUILD" | "BY" | "CACHE" | "CALENDAR" | "CANCEL" | "CATEGORY" | "CHACHA20" | "CHANNEL" | "CHAT" | "CHECK" | "CLASS" | "CLEAR" | "CLONE" | "CODE" | "COLUMN" | "COMMIT" | "COMPRESS" | "CONFIG" | "CONNECT" | "CONSISTENT" | "CONVERT" | "COOKIE" | "COPY" | "COUNT" | "CREATE" | "CRON" | "CURRENCY" | "DATABASE" | "DATE" | "DAY" | "DAYS" | "DB" | "CASE" | "DEFAULT" | "DECODE" | "DECRYPT" | "DEDUPLICATE" | "DELAY" | "DELETE" | "DES" | "DESCRIBE" | "DIRECTIVE" | "DIVIDE" | "DNS" | "DOC" | "DOMAIN" | "EXTERNAL" | "DOWNLOAD" | "DRIVE" | "DROP" | "DURATION" | "EDITOR" | "EMAIL" | "ENCODE" | "ENCRYPT" | "EVENT" | "EXPORT" | "FALSE" | "FETCH" | "FIBONACCI" | "FILE" | "FILTER" | "FIND" | "FIRST" | "FLATTEN" | "FOLDER" | "FORMAT" | "FROM" | "FTP" | "FULLNAME" | "GATHER" | "GENERATE" | "GEOIP" | "GET" | "GRAPH" | "GRAPHIC" | "GROUP" | "HASH" | "HEADER" | "HEIGHT" | "HEX" | "HMAC" | "HOUR" | "HOURS" | "HTML" | "HTTP" | "IDENTIFIER" | "IMAGE" | "IMAP" | "IMPORT" | "INCLUDE" | "INDEX" | "INSERT" | "INTO" | "IP" | "JSON" | "KEY" | "KEYS" | "KILL" | "LABEL" | "LAST" | "LAYERS" | "LENGTH" | "LEVEL" | "LIST" | "LOAD" | "LOG" | "LOGARITHM" | "MAIL" | "MAP" | "MEDIA" | "MESH" | "METHOD" | "MILLISECONDS" | "MINUTE" | "MINUTES" | "MODIFY" | "MODULO" | "MONTH" | "MONTHS" | "MOVE" | "MULTIARRAY" | "MULTIPLY" | "NAME" | "NETWORK" | "NOTIFICATION" | "NOTIFY" | "NULL" | "NUMBER" | "OBJECT" | "OCR" | "OF" | "ON" | "ONBROWSER" | "ONCE" | "OPACITY" | "OUTBOUND" | "PARSE" | "PASSWORD" | "PERSIST" | "PERSISTENT" | "PIXEL" | "PORT" | "POSITION" | "PRESENTATION" | "PRIME" | "PROMISE" | "PROXY" | "PUSH" | "QR" | "QUERY" | "RANDOMIZE" | "RAISE" | "READ" | "RECALL" | "RECEIVE" | "REDIRECT" | "REMEMBER" | "REMIND" | "REMOVE" | "REPLACE" | "REQUIRED" | "RESET" | "RESIZE" | "RESTORE" | "REVERSE" | "ROTATION" | "RUN" | "SAVE" | "SCALE" | "SCENE" | "SCHEDULE" | "SCIENTIFIC" | "SEARCH" | "SECOND" | "SECONDS" | "SELECT" | "SEND" | "SHARE" | "SHOW" | "SIGNAL" | "SIM" | "SIMILARITY" | "SIZE" | "SLEEP" | "SLICE" | "SLIDE" | "SORT" | "SPAWN" | "SPLIT" | "SQUARE" | "SSH" | "START" | "STATUS" | "STORAGE" | "STRING" | "SUBDOMAIN" | "SUBTRACT" | "SUM" | "SYNC" | "TABLE" | "TAG" | "TCP" | "TIME" | "TIMELINE" | "TIMEOUT" | "TIMESTAMP" | "TIMEZONE" | "TITLE" | "TO" | "TOKEN" | "TOML" | "TRANSCODE" | "TRIM" | "TRUE" | "TYPE" | "UDP" | "UNSET" | "UPDATE" | "UPLOAD" | "UPPERCASE" | "URL" | "USER" | "UX" | "VALUE" | "VALUES" | "VERIFY" | "VIDEO" | "WAIT" | "WATCH" | "WEATHER" | "WEBASSEMBLY" | "WEBHOOK" | "WEBRTC" | "WEEK" | "WEEKS" | "WIDTH" | "WITH" | "WRITE" | "XML" | "YAML" | "YEAR" | "YEARS";
+
+identifier           = identifier-start, { identifier-part } ;
+identifier-start     = letter | "_" ;
+identifier-part      = letter | digit | "_" ;
+letter               = ? ASCII letter A-Z or a-z ? ;
+digit                = ? ASCII digit 0-9 ? ;
+
+required-space       = ( whitespace | comment ), { whitespace | comment } ;
+trivia               = { whitespace | comment } ;
+whitespace           = " " | "\t" | "\r" | "\n" ;
+comment              = "(*", { any-character-except-comment-closer }, "*)" ;
+any-character-except-comment-closer = (* any source character except the pair "*)" *) ;

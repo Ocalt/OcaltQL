@@ -1,0 +1,731 @@
+# OcaltQL GBNF — core syntax plus a deliberately permissive feature-command surface.
+# Keywords are encoded case-insensitively; uppercase is a readable convention, not a requirement.
+# See README.md: feature-command arguments are not fully signature-validated.
+
+root ::= gap chain gap
+
+# Chain: the first statement has no prefix; subsequent statements require a chain keyword.
+chain ::= statement period? (sp chain_link sp statement period?)*
+chain_link ::= k_after | k_and | k_or
+period ::= "."
+
+statement ::= if_statement
+            | while_statement
+            | loop_statement
+            | foreach_statement
+            | switch_statement
+            | operation_definition
+            | class_definition
+            | spawn_statement
+            | persistent_storage_statement
+            | core_statement
+            | extension_statement
+
+# IF owns its OR IF and OR OPEN branches. OR in a comparison phrase is parsed inside condition.
+if_statement ::= k_if sp condition sp block (sp k_or sp k_if sp condition sp block)* (sp k_or sp block)?
+while_statement ::= k_while sp condition sp block
+loop_statement ::= k_loop sp value sp k_to sp value (sp k_step sp number)? sp k_set sp variable sp block
+foreach_statement ::= k_foreach sp access_path sp k_set sp variable (sp k_as sp variable)? sp block
+
+block ::= k_open sp chain? sp k_close
+
+switch_statement ::= k_switch sp value sp k_open sp switch_body sp k_close
+switch_body ::= switch_case (sp switch_case)*
+switch_case ::= k_case sp value (sp chain)?
+              | k_default (sp chain)?
+
+operation_definition ::= k_new sp k_persistent sp k_operation sp identifier (sp k_with sp operation_parameter (sp k_and sp operation_parameter)*)? sp block
+                       | k_new sp k_operation sp identifier (sp k_with sp operation_parameter (sp k_and sp operation_parameter)*)? sp block
+operation_parameter ::= variable (sp k_as sp operation_type (sp (k_required | k_default sp value))?)?
+operation_type ::= k_string | k_number | k_bool | k_date
+
+class_definition ::= k_new sp k_class sp identifier sp k_with sp class_member (sp k_and sp class_member)* sp block
+class_member ::= string_literal sp k_as sp (k_string | k_number | k_bool | k_date | k_method) (sp (k_required | k_default sp value))?
+spawn_statement ::= k_spawn sp identifier (sp k_with sp class_argument (sp k_and sp class_argument)*)? result_clause?
+class_argument ::= string_literal sp k_as sp value
+persistent_storage_statement ::= k_set sp k_persistent sp variable sp k_as sp value
+                               | k_consistent sp value result_clause
+                               | k_start sp k_persist
+                               | k_kill sp k_persist
+
+core_statement ::= emit_statement
+                 | string_statement
+                 | number_statement
+                 | set_statement
+                 | unset_statement
+                 | variable_copy_statement
+                 | calculate_statement
+                 | return_statement
+                 | run_statement
+                 | exit_statement
+                 | break_statement
+                 | continue_statement
+                 | catch_statement
+                 | warning_statement
+                 | array_object_statement
+                 | string_operation
+                 | date_time_statement
+                 | conversion_statement
+                 | network_statement
+                 | file_statement
+                 | header_statement
+                 | wait_sleep_statement
+
+emit_statement ::= k_emit sp value_expression
+string_statement ::= k_string sp value_expression result_clause
+number_statement ::= k_number sp value result_clause
+set_statement ::= k_set sp assignment_target sp k_as sp value
+unset_statement ::= k_unset sp k_persistent sp variable
+                  | k_unset sp variable
+variable_copy_statement ::= k_variable sp reference sp k_set sp variable
+assignment_target ::= access_path
+access_path ::= reference | of_reference
+
+calculate_statement ::= k_calculate sp (math_expression | date_calculation | date_difference) result_clause?
+date_difference ::= reference sp "-" sp reference sp k_as sp (k_days | k_hours | k_years)
+return_statement ::= k_return (sp value_expression)?
+run_statement ::= k_run sp k_persistent sp identifier (sp k_with sp value (sp k_and sp value)*)? result_clause?
+                | k_run sp identifier (sp k_with sp value (sp k_and sp value)*)? result_clause?
+exit_statement ::= k_exit (sp value)?
+break_statement ::= k_break
+continue_statement ::= k_continue
+catch_statement ::= k_catch sp k_error result_clause?
+warning_statement ::= k_warning sp value
+
+result_clause ::= sp k_set sp variable
+                | sp k_set sp k_promise sp variable
+                | sp k_set sp k_persistent sp variable
+                | sp k_set sp k_consistent sp value
+
+array_object_statement ::= k_new sp k_array result_clause
+                         | k_new sp k_multiarray result_clause
+                         | k_new sp k_object ("[" object_fields "]")? result_clause
+                         | k_append sp value sp k_to sp reference
+                         | k_append sp value sp k_as sp value sp k_to sp reference
+                         | k_count sp reference result_clause
+                         | k_collapse sp reference result_clause
+                         | k_flatten sp reference result_clause
+                         | k_keys sp reference result_clause
+                         | k_values sp reference result_clause
+                         | k_remove sp k_key sp value sp k_from sp reference result_clause?
+                         | k_search sp k_array sp reference sp k_for sp value result_clause
+                         | k_search sp k_object sp reference sp k_for sp value result_clause
+                         | k_join (sp k_array)? sp reference (sp k_with sp value)? result_clause
+                         | k_slice sp reference sp k_from sp value sp k_to sp value result_clause
+                         | k_sort sp reference (sp (k_ascending | k_descending))? (sp k_by sp value)? result_clause?
+                         | k_merge sp (k_array | k_object) sp reference sp k_with sp reference result_clause
+                         | k_reverse sp k_array sp reference result_clause
+
+object_fields ::= object_field (sp k_and sp object_field)*
+object_field ::= string_literal sp k_as sp value
+
+string_operation ::= k_length sp value result_clause
+                   | k_string sp k_uppercase sp value result_clause
+                   | k_string sp k_lowercase sp value result_clause
+                   | k_trim sp k_string sp value result_clause
+                   | k_reverse sp k_string sp value result_clause
+                   | k_replace sp k_string sp k_all sp value sp k_with sp value sp k_where sp value result_clause?
+                   | k_replace sp k_string sp k_once sp value sp k_with sp value sp k_where sp value result_clause?
+                   | k_replace sp k_string sp k_from sp value sp k_to sp value sp k_with sp value sp k_where sp value result_clause?
+                   | k_search sp k_string sp value sp k_for sp value result_clause
+                   | k_select sp k_string sp value sp k_from sp value sp k_to sp value result_clause
+                   | k_split sp value sp k_by sp value result_clause
+
+date_time_statement ::= k_new sp k_date (sp k_and sp k_time)? (sp k_from sp value)? result_clause
+                      | k_new sp k_time (sp k_from sp value)? result_clause
+                      | k_get sp value sp (k_day | k_month) sp (k_fullname | k_shortname) result_clause
+                      | k_get sp value sp (k_year | k_month | k_day | k_hour | k_minute | k_second | k_timestamp) result_clause
+                      | k_format sp (k_date | k_time | k_date sp k_and sp k_time) sp value sp k_as sp string_literal result_clause
+
+date_calculation ::= reference sp ("+" | "-") sp value sp (k_day | k_days | k_week | k_weeks | k_month | k_months | k_year | k_years | k_minutes | k_hours)
+                   | reference sp (k_first | k_last) sp k_day
+
+conversion_statement ::= k_cast sp value sp k_as sp (k_string | k_number | k_bool | k_date | k_json | k_oqlobject) (sp k_from sp value)? result_clause?
+                       | k_parse sp value sp k_as sp identifier result_clause
+                       | (k_encode | k_decode) sp value sp k_as sp identifier (sp k_from sp identifier)? result_clause?
+                       | k_convert sp identifier sp value (sp k_to sp value)? result_clause?
+
+network_statement ::= k_fetch sp value (sp k_method sp value)? (sp (k_header | k_body | k_user sp k_agent | k_ip | k_proxy | k_timeout | k_into) sp value)* (sp k_seconds)? result_clause?
+                    | k_curl sp value (sp k_method sp value)? (sp (k_header | k_body | k_user sp k_agent | k_ip | k_timeout | k_into) sp value)* (sp k_seconds)? result_clause?
+
+file_statement ::= k_file sp k_read sp value result_clause?
+                 | k_file sp k_write sp value sp k_to sp value
+                 | k_file sp (k_delete | k_mkdir | k_list | k_exists | k_stat) sp value result_clause?
+                 | k_file sp (k_move | k_copy) sp value sp k_to sp value
+header_statement ::= k_header sp value (sp k_as sp value)?
+wait_sleep_statement ::= k_wait sp k_for sp reference (sp value sp k_seconds)? result_clause?
+                       | k_sleep sp value (sp (k_milliseconds | k_second | k_seconds | k_minute | k_minutes | k_hour | k_hours))?
+
+# Condition precedence: AND binds tighter than OR.
+condition ::= condition_and (sp k_or sp condition_and)*
+condition_and ::= predicate (sp k_and sp predicate)*
+predicate ::= (k_some sp)? value (sp comparison | sp k_contains sp value)?
+comparison ::= (k_is | k_are) sp
+               (k_not sp k_identical sp k_to sp value
+               | k_not sp k_equal sp k_to sp value
+               | k_identical sp k_to sp value
+               | k_equal sp k_to sp value
+               | k_greater sp k_than sp k_or sp k_equal sp k_to sp value
+               | k_less sp k_than sp k_or sp k_equal sp k_to sp value
+               | k_greater sp k_than sp value
+               | k_less sp k_than sp value
+               | k_not sp k_set
+               | k_set
+               | k_not sp k_array
+               | k_array
+               | k_not sp k_empty
+               | k_empty
+               | k_not sp k_null
+               | k_null
+               | k_waiting
+               | k_infinite
+               | k_true
+               | k_false)
+
+value_expression ::= value (gap "&" gap value)*
+value ::= literal
+        | reference
+        | persistent_reference
+        | of_reference
+        | bracket_value
+        | object_value
+        | "(" value ")"
+
+literal ::= string_literal | number | k_true | k_false | k_null
+string_literal ::= double_quoted_string | single_quoted_string | raw_string
+double_quoted_string ::= "\"" ([^"\\] | "\\" .)* "\""
+single_quoted_string ::= "'" ([^'\\] | "\\" .)* "'"
+raw_string ::= "`" ("\\`" | [^`])* "`"
+
+reference ::= variable_access | global_access | this_context_reference | this_object_reference
+this_context_reference ::= "!" k_this "(" value? ")" selector*
+this_object_reference ::= k_this selector*
+variable_access ::= variable selector*
+global_access ::= "!" identifier selector*
+persistent_reference ::= k_persistent sp variable selector*
+consistent_reference ::= k_consistent sp value
+variable ::= "?" identifier
+selector ::= "(" value ")"
+of_reference ::= value (sp k_of sp value)* sp k_of sp reference
+
+bracket_value ::= "[" (inline_operation | array_items)? "]"
+array_items ::= value (sp k_and sp value)*
+object_value ::= k_new sp k_object ("[" object_fields "]")?
+inline_operation ::= k_calculate sp math_expression
+                  | k_run sp k_persistent sp identifier (sp k_with sp value (sp k_and sp value)*)?
+                  | k_run sp identifier (sp k_with sp value (sp k_and sp value)*)?
+                  | consistent_reference
+                  | feature_head (sp feature_argument)*
+                  | value_expression
+
+math_expression ::= additive_expression
+additive_expression ::= multiplicative_expression (gap ("+" | "-") gap multiplicative_expression)*
+multiplicative_expression ::= unary_expression (gap ("*" | "/") gap unary_expression)*
+unary_expression ::= ("+" | "-")? math_primary
+math_primary ::= number
+               | reference
+               | function_call
+               | "(" math_expression ")"
+               | bracket_value
+function_call ::= identifier "(" (math_expression ("," math_expression)*)? ")"
+number ::= [+-]? [0-9]+ ("." [0-9]+)? ([eE] [+-]? [0-9]+)?
+
+# Feature commands: command heads are drawn from the published Verb Reference.
+# This fallback gives the model broad command-family coverage, not exact per-verb validation.
+extension_statement ::= (variable_access sp)? feature_head (sp feature_argument)* result_clause?
+feature_head ::= k_absolute | k_account | k_add | k_animate | k_app | k_append | k_applicate | k_assign | k_audio
+               | k_auth | k_background | k_bim | k_block | k_book | k_browser | k_bridge | k_build | k_cache
+               | k_calculate | k_calendar | k_call | k_cancel | k_cast | k_chat | k_check | k_class | k_clear
+               | k_clone | k_code | k_column | k_commit | k_compress | k_config | k_connect | k_consistent | k_convert
+               | k_cookie | k_count | k_cron | k_currency | k_database | k_db | k_case | k_default | k_decode
+               | k_decrypt | k_deduplicate | k_delete | k_describe | k_directive | k_divide | k_dns | k_doc | k_domain
+               | k_download | k_drive | k_drop | k_editor | k_email | k_emit | k_encode | k_encrypt | k_exit
+               | k_export | k_external | k_factorial | k_fetch | k_fibonacci | k_file | k_filter | k_find | k_first
+               | k_flatten | k_folder | k_forget | k_format | k_ftp | k_gather | k_generate | k_geoip | k_get
+               | k_graph | k_graphic | k_group | k_hash | k_header | k_html | k_http | k_image | k_imap
+               | k_import | k_include | k_insert | k_join | k_json | k_key | k_kill | k_label | k_list
+               | k_load | k_log | k_logarithm | k_mail | k_map | k_material | k_matrix | k_media | k_mesh
+               | k_modulo | k_move | k_multiply | k_multiarray | k_network | k_notification | k_notify | k_new | k_ocr | k_onbrowser
+               | k_operation | k_outbound | k_parse | k_password | k_pixel | k_power | k_presentation | k_prime | k_push
+               | k_qr | k_query | k_raise | k_randomize | k_read | k_recall | k_receive | k_redirect | k_remember
+               | k_remind | k_remove | k_replace | k_reset | k_resize | k_restore | k_return | k_reverse | k_rich
+               | k_round | k_run | k_save | k_schedule | k_scene | k_search | k_select | k_send | k_share
+               | k_show | k_sim | k_sleep | k_slice | k_slide | k_sort | k_spawn | k_split | k_square
+               | k_ssh | k_start | k_status | k_storage | k_string | k_subdomain | k_subtract | k_sum | k_sync
+               | k_table | k_tag | k_tcp | k_time | k_timeline | k_token | k_transcode | k_trim | k_udp
+               | k_unset | k_update | k_upload | k_user | k_ux | k_verify | k_video | k_wait | k_watch
+               | k_weather | k_websocket | k_webassembly | k_webhook | k_webrtc | k_write
+feature_argument ::= value | feature_option | "," | ":" | "=" | "/" | "-" | "+" | "&"
+feature_option ::= k_board | k_expose | k_live | k_material | k_open | k_pcb | k_point | k_polygon | k_pop3 | k_ports | k_primitive | k_raw | k_render | k_route | k_smooth | k_solve | k_attendee | k_bind | k_compare | k_domains | k_login | k_register | k_revoke | k_ssl | k_unbind | k_absolute | k_account | k_add | k_aes | k_agent | k_all | k_animate | k_app | k_append | k_applicate | k_are | k_array | k_as | k_ascending | k_assign | k_audio | k_auth | k_background | k_base64 | k_bim | k_block | k_body | k_book | k_bool | k_bridge | k_browser | k_build | k_by | k_cache | k_calculate | k_calendar | k_call | k_cancel | k_case | k_cast | k_catch | k_chacha20 | k_chat | k_check | k_class | k_clear | k_clone | k_code | k_collapse | k_color | k_column | k_commit | k_compress | k_config | k_connect | k_consistent | k_contains | k_convert | k_cookie | k_copy | k_count | k_create | k_cron | k_csv | k_curl | k_currency | k_database | k_date | k_day | k_days | k_db | k_decimals | k_decode | k_decrypt | k_deduplicate | k_default | k_delete | k_des | k_descending | k_describe | k_description | k_directive | k_divide | k_dns | k_doc | k_domain | k_download | k_drive | k_drop | k_editor | k_email | k_emit | k_empty | k_encode | k_encrypt | k_equal | k_error | k_exists | k_export | k_false | k_fetch | k_fibonacci | k_file | k_filter | k_find | k_first | k_flatten | k_folder | k_for | k_forget | k_format | k_from | k_ftp | k_fullname | k_gather | k_generate | k_geoip | k_get | k_graph | k_graphic | k_greater | k_group | k_hash | k_header | k_height | k_hex | k_hmac | k_hour | k_hours | k_html | k_http | k_identical | k_image | k_imap | k_import | k_include | k_infinite | k_insert | k_integer | k_into | k_ip | k_is | k_join | k_json | k_key | k_keys | k_kill | k_label | k_last | k_layers | k_length | k_less | k_level | k_list | k_load | k_log | k_logarithm | k_lowercase | k_mail | k_map | k_markdown | k_media | k_merge | k_mesh | k_method | k_milliseconds | k_minute | k_minutes | k_mkdir | k_modify | k_modulo | k_month | k_months | k_move | k_multiarray | k_multiply | k_name | k_network | k_new | k_not | k_notification | k_notify | k_null | k_number | k_object | k_ocr | k_of | k_off | k_on | k_onbrowser | k_once | k_opacity | k_oqlobject | k_outbound | k_parse | k_persist | k_persistent | k_pixel | k_position | k_presentation | k_prime | k_promise | k_proxy | k_push | k_qr | k_query | k_randomize | k_range | k_raise | k_read | k_recall | k_receive | k_redirect | k_remember | k_remind | k_remove | k_replace | k_required | k_reset | k_resize | k_restore | k_reverse | k_rotation | k_run | k_save | k_scale | k_scene | k_schedule | k_scientific | k_search | k_second | k_seconds | k_select | k_send | k_sha1 | k_sha256 | k_sha384 | k_sha512 | k_share | k_shortname | k_show | k_sim | k_size | k_sleep | k_slice | k_slide | k_some | k_sort | k_spawn | k_split | k_square | k_ssh | k_start | k_stat | k_status | k_step | k_storage | k_string | k_subdomain | k_subtract | k_sum | k_sync | k_table | k_tag | k_tcp | k_than | k_this | k_time | k_timeline | k_timeout | k_timestamp | k_timezone | k_title | k_to | k_token | k_toml | k_transcode | k_trim | k_true | k_udp | k_unit | k_unset | k_update | k_upload | k_uppercase | k_url | k_user | k_ux | k_value | k_values | k_variable | k_verify | k_video | k_wait | k_waiting | k_warning | k_watch | k_weather | k_webassembly | k_webhook | k_webrtc | k_week | k_weeks | k_where | k_width | k_with | k_write | k_xml | k_yaml | k_year | k_years
+
+identifier ::= [A-Za-z_] [A-Za-z0-9_]*
+
+# Trivia and comments. Comments are non-nesting and may span lines.
+gap ::= (ws | comment)*
+sp ::= (ws | comment)+
+ws ::= [ \t\r\n]+
+comment ::= "(*" ([^*] | "*" [^)])* "*)"
+
+# Case-insensitive keyword terminals.
+
+k_after ::= [aA][fF][tT][eE][rR]
+k_and ::= [aA][nN][dD]
+k_or ::= [oO][rR]
+k_if ::= [iI][fF]
+k_while ::= [wW][hH][iI][lL][eE]
+k_loop ::= [lL][oO][oO][pP]
+k_to ::= [tT][oO]
+k_step ::= [sS][tT][eE][pP]
+k_set ::= [sS][eE][tT]
+k_foreach ::= [fF][oO][rR][eE][aA][cC][hH]
+k_as ::= [aA][sS]
+k_switch ::= [sS][wW][iI][tT][cC][hH]
+k_case ::= [cC][aA][sS][eE]
+k_default ::= [dD][eE][fF][aA][uU][lL][tT]
+k_new ::= [nN][eE][wW]
+k_operation ::= [oO][pP][eE][rR][aA][tT][iI][oO][nN]
+k_open ::= [oO][pP][eE][nN]
+k_close ::= [cC][lL][oO][sS][eE]
+k_emit ::= [eE][mM][iI][tT]
+k_string ::= [sS][tT][rR][iI][nN][gG]
+k_number ::= [nN][uU][mM][bB][eE][rR]
+k_unset ::= [uU][nN][sS][eE][tT]
+k_variable ::= [vV][aA][rR][iI][aA][bB][lL][eE]
+k_calculate ::= [cC][aA][lL][cC][uU][lL][aA][tT][eE]
+k_return ::= [rR][eE][tT][uU][rR][nN]
+k_run ::= [rR][uU][nN]
+k_exit ::= [eE][xX][iI][tT]
+k_break ::= [bB][rR][eE][aA][kK]
+k_continue ::= [cC][oO][nN][tT][iI][nN][uU][eE]
+k_catch ::= [cC][aA][tT][cC][hH]
+k_error ::= [eE][rR][rR][oO][rR]
+k_warning ::= [wW][aA][rR][nN][iI][nN][gG]
+k_promise ::= [pP][rR][oO][mM][iI][sS][eE]
+k_array ::= [aA][rR][rR][aA][yY]
+k_multiarray ::= [mM][uU][lL][tT][iI][aA][rR][rR][aA][yY]
+k_object ::= [oO][bB][jJ][eE][cC][tT]
+k_append ::= [aA][pP][pP][eE][nN][dD]
+k_count ::= [cC][oO][uU][nN][tT]
+k_collapse ::= [cC][oO][lL][lL][aA][pP][sS][eE]
+k_flatten ::= [fF][lL][aA][tT][tT][eE][nN]
+k_keys ::= [kK][eE][yY][sS]
+k_values ::= [vV][aA][lL][uU][eE][sS]
+k_remove ::= [rR][eE][mM][oO][vV][eE]
+k_key ::= [kK][eE][yY]
+k_from ::= [fF][rR][oO][mM]
+k_search ::= [sS][eE][aA][rR][cC][hH]
+k_for ::= [fF][oO][rR]
+k_join ::= [jJ][oO][iI][nN]
+k_slice ::= [sS][lL][iI][cC][eE]
+k_sort ::= [sS][oO][rR][tT]
+k_ascending ::= [aA][sS][cC][eE][nN][dD][iI][nN][gG]
+k_descending ::= [dD][eE][sS][cC][eE][nN][dD][iI][nN][gG]
+k_by ::= [bB][yY]
+k_with ::= [wW][iI][tT][hH]
+k_reverse ::= [rR][eE][vV][eE][rR][sS][eE]
+k_all ::= [aA][lL][lL]
+k_once ::= [oO][nN][cC][eE]
+k_replace ::= [rR][eE][pP][lL][aA][cC][eE]
+k_length ::= [lL][eE][nN][gG][tT][hH]
+k_uppercase ::= [uU][pP][pP][eE][rR][cC][aA][sS][eE]
+k_lowercase ::= [lL][oO][wW][eE][rR][cC][aA][sS][eE]
+k_trim ::= [tT][rR][iI][mM]
+k_select ::= [sS][eE][lL][eE][cC][tT]
+k_split ::= [sS][pP][lL][iI][tT]
+k_date ::= [dD][aA][tT][eE]
+k_time ::= [tT][iI][mM][eE]
+k_get ::= [gG][eE][tT]
+k_day ::= [dD][aA][yY]
+k_month ::= [mM][oO][nN][tT][hH]
+k_fullname ::= [fF][uU][lL][lL][nN][aA][mM][eE]
+k_shortname ::= [sS][hH][oO][rR][tT][nN][aA][mM][eE]
+k_first ::= [fF][iI][rR][sS][tT]
+k_last ::= [lL][aA][sS][tT]
+k_cast ::= [cC][aA][sS][tT]
+k_bool ::= [bB][oO][oO][lL]
+k_json ::= [jJ][sS][oO][nN]
+k_oqlobject ::= [oO][qQ][lL][oO][bB][jJ][eE][cC][tT]
+k_parse ::= [pP][aA][rR][sS][eE]
+k_encode ::= [eE][nN][cC][oO][dD][eE]
+k_decode ::= [dD][eE][cC][oO][dD][eE]
+k_convert ::= [cC][oO][nN][vV][eE][rR][tT]
+k_method ::= [mM][eE][tT][hH][oO][dD]
+k_header ::= [hH][eE][aA][dD][eE][rR]
+k_body ::= [bB][oO][dD][yY]
+k_user ::= [uU][sS][eE][rR]
+k_agent ::= [aA][gG][eE][nN][tT]
+k_ip ::= [iI][pP]
+k_proxy ::= [pP][rR][oO][xX][yY]
+k_timeout ::= [tT][iI][mM][eE][oO][uU][tT]
+k_into ::= [iI][nN][tT][oO]
+k_seconds ::= [sS][eE][cC][oO][nN][dD][sS]
+k_file ::= [fF][iI][lL][eE]
+k_read ::= [rR][eE][aA][dD]
+k_write ::= [wW][rR][iI][tT][eE]
+k_delete ::= [dD][eE][lL][eE][tT][eE]
+k_mkdir ::= [mM][kK][dD][iI][rR]
+k_list ::= [lL][iI][sS][tT]
+k_exists ::= [eE][xX][iI][sS][tT][sS]
+k_stat ::= [sS][tT][aA][tT]
+k_move ::= [mM][oO][vV][eE]
+k_copy ::= [cC][oO][pP][yY]
+k_wait ::= [wW][aA][iI][tT]
+k_sleep ::= [sS][lL][eE][eE][pP]
+k_milliseconds ::= [mM][iI][lL][lL][iI][sS][eE][cC][oO][nN][dD][sS]
+k_minutes ::= [mM][iI][nN][uU][tT][eE][sS]
+k_hours ::= [hH][oO][uU][rR][sS]
+k_is ::= [iI][sS]
+k_are ::= [aA][rR][eE]
+k_some ::= [sS][oO][mM][eE]
+k_equal ::= [eE][qQ][uU][aA][lL]
+k_identical ::= [iI][dD][eE][nN][tT][iI][cC][aA][lL]
+k_greater ::= [gG][rR][eE][aA][tT][eE][rR]
+k_than ::= [tT][hH][aA][nN]
+k_less ::= [lL][eE][sS][sS]
+k_not ::= [nN][oO][tT]
+k_contains ::= [cC][oO][nN][tT][aA][iI][nN][sS]
+k_null ::= [nN][uU][lL][lL]
+k_true ::= [tT][rR][uU][eE]
+k_false ::= [fF][aA][lL][sS][eE]
+k_empty ::= [eE][mM][pP][tT][yY]
+k_infinite ::= [iI][nN][fF][iI][nN][iI][tT][eE]
+k_waiting ::= [wW][aA][iI][tT][iI][nN][gG]
+k_this ::= [tT][hH][iI][sS]
+k_account ::= [aA][cC][cC][oO][uU][nN][tT]
+k_add ::= [aA][dD][dD]
+k_animate ::= [aA][nN][iI][mM][aA][tT][eE]
+k_app ::= [aA][pP][pP]
+k_audio ::= [aA][uU][dD][iI][oO]
+k_auth ::= [aA][uU][tT][hH]
+k_background ::= [bB][aA][cC][kK][gG][rR][oO][uU][nN][dD]
+k_browser ::= [bB][rR][oO][wW][sS][eE][rR]
+k_bridge ::= [bB][rR][iI][dD][gG][eE]
+k_build ::= [bB][uU][iI][lL][dD]
+k_cache ::= [cC][aA][cC][hH][eE]
+k_calendar ::= [cC][aA][lL][eE][nN][dD][aA][rR]
+k_cancel ::= [cC][aA][nN][cC][eE][lL]
+k_chat ::= [cC][hH][aA][tT]
+k_check ::= [cC][hH][eE][cC][kK]
+k_class ::= [cC][lL][aA][sS][sS]
+k_clear ::= [cC][lL][eE][aA][rR]
+k_clone ::= [cC][lL][oO][nN][eE]
+k_code ::= [cC][oO][dD][eE]
+k_column ::= [cC][oO][lL][uU][mM][nN]
+k_commit ::= [cC][oO][mM][mM][iI][tT]
+k_compress ::= [cC][oO][mM][pP][rR][eE][sS][sS]
+k_config ::= [cC][oO][nN][fF][iI][gG]
+k_connect ::= [cC][oO][nN][nN][eE][cC][tT]
+k_consistent ::= [cC][oO][nN][sS][iI][sS][tT][eE][nN][tT]
+k_cookie ::= [cC][oO][oO][kK][iI][eE]
+k_cron ::= [cC][rR][oO][nN]
+k_currency ::= [cC][uU][rR][rR][eE][nN][cC][yY]
+k_database ::= [dD][aA][tT][aA][bB][aA][sS][eE]
+k_db ::= [dD][bB]
+k_deduplicate ::= [dD][eE][dD][uU][pP][lL][iI][cC][aA][tT][eE]
+k_directive ::= [dD][iI][rR][eE][cC][tT][iI][vV][eE]
+k_divide ::= [dD][iI][vV][iI][dD][eE]
+k_dns ::= [dD][nN][sS]
+k_doc ::= [dD][oO][cC]
+k_domain ::= [dD][oO][mM][aA][iI][nN]
+k_download ::= [dD][oO][wW][nN][lL][oO][aA][dD]
+k_drive ::= [dD][rR][iI][vV][eE]
+k_drop ::= [dD][rR][oO][pP]
+k_editor ::= [eE][dD][iI][tT][oO][rR]
+k_email ::= [eE][mM][aA][iI][lL]
+k_encrypt ::= [eE][nN][cC][rR][yY][pP][tT]
+k_export ::= [eE][xX][pP][oO][rR][tT]
+k_fibonacci ::= [fF][iI][bB][oO][nN][aA][cC][cC][iI]
+k_filter ::= [fF][iI][lL][tT][eE][rR]
+k_find ::= [fF][iI][nN][dD]
+k_folder ::= [fF][oO][lL][dD][eE][rR]
+k_format ::= [fF][oO][rR][mM][aA][tT]
+k_ftp ::= [fF][tT][pP]
+k_gather ::= [gG][aA][tT][hH][eE][rR]
+k_generate ::= [gG][eE][nN][eE][rR][aA][tT][eE]
+k_geoip ::= [gG][eE][oO][iI][pP]
+k_graph ::= [gG][rR][aA][pP][hH]
+k_group ::= [gG][rR][oO][uU][pP]
+k_hash ::= [hH][aA][sS][hH]
+k_html ::= [hH][tT][mM][lL]
+k_http ::= [hH][tT][tT][pP]
+k_image ::= [iI][mM][aA][gG][eE]
+k_imap ::= [iI][mM][aA][pP]
+k_import ::= [iI][mM][pP][oO][rR][tT]
+k_include ::= [iI][nN][cC][lL][uU][dD][eE]
+k_insert ::= [iI][nN][sS][eE][rR][tT]
+k_kill ::= [kK][iI][lL][lL]
+k_load ::= [lL][oO][aA][dD]
+k_log ::= [lL][oO][gG]
+k_mail ::= [mM][aA][iI][lL]
+k_map ::= [mM][aA][pP]
+k_media ::= [mM][eE][dD][iI][aA]
+k_mesh ::= [mM][eE][sS][hH]
+k_modulo ::= [mM][oO][dD][uU][lL][oO]
+k_multiply ::= [mM][uU][lL][tT][iI][pP][lL][yY]
+k_network ::= [nN][eE][tT][wW][oO][rR][kK]
+k_notify ::= [nN][oO][tT][iI][fF][yY]
+k_ocr ::= [oO][cC][rR]
+k_onbrowser ::= [oO][nN][bB][rR][oO][wW][sS][eE][rR]
+k_outbound ::= [oO][uU][tT][bB][oO][uU][nN][dD]
+k_pixel ::= [pP][iI][xX][eE][lL]
+k_presentation ::= [pP][rR][eE][sS][eE][nN][tT][aA][tT][iI][oO][nN]
+k_prime ::= [pP][rR][iI][mM][eE]
+k_push ::= [pP][uU][sS][hH]
+k_qr ::= [qQ][rR]
+k_query ::= [qQ][uU][eE][rR][yY]
+k_randomize ::= [rR][aA][nN][dD][oO][mM][iI][zZ][eE]
+k_receive ::= [rR][eE][cC][eE][iI][vV][eE]
+k_redirect ::= [rR][eE][dD][iI][rR][eE][cC][tT]
+k_remember ::= [rR][eE][mM][eE][mM][bB][eE][rR]
+k_remind ::= [rR][eE][mM][iI][nN][dD]
+k_reset ::= [rR][eE][sS][eE][tT]
+k_resize ::= [rR][eE][sS][iI][zZ][eE]
+k_restore ::= [rR][eE][sS][tT][oO][rR][eE]
+k_save ::= [sS][aA][vV][eE]
+k_schedule ::= [sS][cC][hH][eE][dD][uU][lL][eE]
+k_send ::= [sS][eE][nN][dD]
+k_share ::= [sS][hH][aA][rR][eE]
+k_show ::= [sS][hH][oO][wW]
+k_spawn ::= [sS][pP][aA][wW][nN]
+k_square ::= [sS][qQ][uU][aA][rR][eE]
+k_ssh ::= [sS][sS][hH]
+k_start ::= [sS][tT][aA][rR][tT]
+k_status ::= [sS][tT][aA][tT][uU][sS]
+k_storage ::= [sS][tT][oO][rR][aA][gG][eE]
+k_subdomain ::= [sS][uU][bB][dD][oO][mM][aA][iI][nN]
+k_subtract ::= [sS][uU][bB][tT][rR][aA][cC][tT]
+k_sum ::= [sS][uU][mM]
+k_sync ::= [sS][yY][nN][cC]
+k_table ::= [tT][aA][bB][lL][eE]
+k_tag ::= [tT][aA][gG]
+k_token ::= [tT][oO][kK][eE][nN]
+k_update ::= [uU][pP][dD][aA][tT][eE]
+k_upload ::= [uU][pP][lL][oO][aA][dD]
+k_ux ::= [uU][xX]
+k_verify ::= [vV][eE][rR][iI][fF][yY]
+k_video ::= [vV][iI][dD][eE][oO]
+k_watch ::= [wW][aA][tT][cC][hH]
+k_weather ::= [wW][eE][aA][tT][hH][eE][rR]
+k_webassembly ::= [wW][eE][bB][aA][sS][sS][eE][mM][bB][lL][yY]
+k_webhook ::= [wW][eE][bB][hH][oO][oO][kK]
+k_webrtc ::= [wW][eE][bB][rR][tT][cC]
+
+k_of ::= [oO][fF]
+k_days ::= [dD][aA][yY][sS]
+k_week ::= [wW][eE][eE][kK]
+k_weeks ::= [wW][eE][eE][kK][sS]
+k_months ::= [mM][oO][nN][tT][hH][sS]
+k_year ::= [yY][eE][aA][rR]
+k_years ::= [yY][eE][aA][rR][sS]
+k_persistent ::= [pP][eE][rR][sS][iI][sS][tT][eE][nN][tT]
+k_call ::= [cC][aA][lL][lL]
+
+k_required ::= [rR][eE][qQ][uU][iI][rR][eE][dD]
+
+k_persist ::= [pP][eE][rR][sS][iI][sS][tT]
+
+k_timezone ::= [tT][iI][mM][eE][zZ][oO][nN][eE]
+
+k_timestamp ::= [tT][iI][mM][eE][sS][tT][aA][mM][pP]
+
+k_hour ::= [hH][oO][uU][rR]
+
+k_minute ::= [mM][iI][nN][uU][tT][eE]
+
+k_second ::= [sS][eE][cC][oO][nN][dD]
+
+k_range ::= [rR][aA][nN][gG][eE]
+
+k_on ::= [oO][nN]
+
+k_off ::= [oO][fF][fF]
+
+k_base64 ::= [bB][aA][sS][eE][6][4][4]
+
+k_url ::= [uU][rR][lL]
+
+k_hex ::= [hH][eE][xX]
+
+k_sha1 ::= [sS][hH][aA][1]
+
+k_sha256 ::= [sS][hH][aA][2][5][6]
+
+k_sha384 ::= [sS][hH][aA][3][8][4]
+
+k_sha512 ::= [sS][hH][aA][5][1][2]
+
+k_hmac ::= [hH][mM][aA][cC]
+
+k_aes ::= [aA][eE][sS]
+
+k_chacha20 ::= [cC][hH][aA][cC][hH][aA][2][0]
+
+k_des ::= [dD][eE][sS]
+
+k_xml ::= [xX][mM][lL]
+
+k_yaml ::= [yY][aA][mM][lL]
+
+k_toml ::= [tT][oO][mM][lL]
+
+k_csv ::= [cC][sS][vV]
+
+k_markdown ::= [mM][aA][rR][kK][dD][oO][wW][nN]
+
+k_integer ::= [iI][nN][tT][eE][gG][eE][rR]
+
+k_scientific ::= [sS][cC][iI][eE][nN][tT][iI][fF][iI][cC]
+
+k_decimals ::= [dD][eE][cC][iI][mM][aA][lL][sS]
+
+k_name ::= [nN][aA][mM][eE]
+
+k_label ::= [lL][aA][bB][eE][lL]
+
+k_title ::= [tT][iI][tT][lL][eE]
+
+k_description ::= [dD][eE][sS][cC][rR][iI][pP][tT][iI][oO][nN]
+
+k_value ::= [vV][aA][lL][uU][eE]
+
+k_width ::= [wW][iI][dD][tT][hH]
+
+k_height ::= [hH][eE][iI][gG][hH][tT]
+
+k_size ::= [sS][iI][zZ][eE]
+
+k_level ::= [lL][eE][vV][eE][lL]
+
+k_unit ::= [uU][nN][iI][tT]
+
+k_layers ::= [lL][aA][yY][eE][rR][sS]
+
+k_opacity ::= [oO][pP][aA][cC][iI][tT][yY]
+
+k_color ::= [cC][oO][lL][oO][rR]
+
+k_position ::= [pP][oO][sS][iI][tT][iI][oO][nN]
+
+k_rotation ::= [rR][oO][tT][aA][tT][iI][oO][nN]
+
+k_scale ::= [sS][cC][aA][lL][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_absolute ::= [aA][bB][sS][oO][lL][uU][tT][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_applicate ::= [aA][pP][pP][lL][iI][cC][aA][tT][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_assign ::= [aA][sS][sS][iI][gG][nN]
+
+# Added from documented verb signatures / option vocabulary.
+k_bim ::= [bB][iI][mM]
+
+# Added from documented verb signatures / option vocabulary.
+k_block ::= [bB][lL][oO][cC][kK]
+
+# Added from documented verb signatures / option vocabulary.
+k_book ::= [bB][oO][oO][kK]
+
+# Added from documented verb signatures / option vocabulary.
+k_create ::= [cC][rR][eE][aA][tT][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_describe ::= [dD][eE][sS][cC][rR][iI][bB][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_fetch ::= [fF][eE][tT][cC][hH]
+
+# Added from documented verb signatures / option vocabulary.
+k_graphic ::= [gG][rR][aA][pP][hH][iI][cC]
+
+# Added from documented verb signatures / option vocabulary.
+k_logarithm ::= [lL][oO][gG][aA][rR][iI][tT][hH][mM]
+
+# Added from documented verb signatures / option vocabulary.
+k_modify ::= [mM][oO][dD][iI][fF][yY]
+
+# Added from documented verb signatures / option vocabulary.
+k_notification ::= [nN][oO][tT][iI][fF][iI][cC][aA][tT][iI][oO][nN]
+
+# Added from documented verb signatures / option vocabulary.
+k_scene ::= [sS][cC][eE][nN][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_sim ::= [sS][iI][mM]
+
+# Added from documented verb signatures / option vocabulary.
+k_tcp ::= [tT][cC][pP]
+
+# Added from documented verb signatures / option vocabulary.
+k_timeline ::= [tT][iI][mM][eE][lL][iI][nN][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_transcode ::= [tT][rR][aA][nN][sS][cC][oO][dD][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_udp ::= [uU][dD][pP]
+
+# Added from documented verb signatures / option vocabulary.
+k_curl ::= [cC][uU][rR][lL]
+
+# Added from documented verb signatures / option vocabulary.
+k_decrypt ::= [dD][eE][cC][rR][yY][pP][tT]
+
+# Added from documented verb signatures / option vocabulary.
+k_merge ::= [mM][eE][rR][gG][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_slide ::= [sS][lL][iI][dD][eE]
+
+# Added from documented verb signatures / option vocabulary.
+k_where ::= [wW][hH][eE][rR][eE]
+
+# Documented persistent-storage command.
+k_forget ::= [fF][oO][rR][gG][eE][tT]
+
+# Documented persistent-storage command.
+k_recall ::= [rR][eE][cC][aA][lL][lL]
+
+
+# Additional command-head terminals from the runtime verb index.
+k_external ::= [eE][xX][tT][eE][rR][nN][aA][lL]
+k_factorial ::= [fF][aA][cC][tT][oO][rR][iI][aA][lL]
+k_material ::= [mM][aA][tT][eE][rR][iI][aA][lL]
+k_matrix ::= [mM][aA][tT][rR][iI][xX]
+k_password ::= [pP][aA][sS][sS][wW][oO][rR][dD]
+k_power ::= [pP][oO][wW][eE][rR]
+k_raise ::= [rR][aA][iI][sS][eE]
+k_rich ::= [rR][iI][cC][hH]
+k_round ::= [rR][oO][uU][nN][dD]
+k_websocket ::= [wW][eE][bB][sS][oO][cC][kK][eE][tT]
+
+
+# Common subverbs/modifiers from the runtime command signatures.
+k_attendee ::= [aA][tT][tT][eE][nN][dD][eE][eE]
+k_bind ::= [bB][iI][nN][dD]
+k_compare ::= [cC][oO][mM][pP][aA][rR][eE]
+k_domains ::= [dD][oO][mM][aA][iI][nN][sS]
+k_login ::= [lL][oO][gG][iI][nN]
+k_register ::= [rR][eE][gG][iI][sS][tT][eE][rR]
+k_revoke ::= [rR][eE][vV][oO][kK][eE]
+k_ssl ::= [sS][sS][lL]
+k_unbind ::= [uU][nN][bB][iI][nN][dD]
+
+
+# Feature subcommands used in documented command signatures.
+k_board ::= [bB][oO][aA][rR][dD]
+k_expose ::= [eE][xX][pP][oO][sS][eE]
+k_live ::= [lL][iI][vV][eE]
+k_pcb ::= [pP][cC][bB]
+k_point ::= [pP][oO][iI][nN][tT]
+k_polygon ::= [pP][oO][lL][yY][gG][oO][nN]
+k_pop3 ::= [pP][oO][pP]3
+k_ports ::= [pP][oO][rR][tT][sS]
+k_primitive ::= [pP][rR][iI][mM][iI][tT][iI][vV][eE]
+k_raw ::= [rR][aA][wW]
+k_render ::= [rR][eE][nN][dD][eE][rR]
+k_route ::= [rR][oO][uU][tT][eE]
+k_smooth ::= [sS][mM][oO][oO][tT][hH]
+k_solve ::= [sS][oO][lL][vV][eE]
