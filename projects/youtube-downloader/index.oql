@@ -1,0 +1,1526 @@
+(* ================================================================= *)
+(* YOUSAVE                                                            *)
+(*                                                                     *)
+(* Save YouTube videos to your own storage, written in OcaltQL.       *)
+(*                                                                     *)
+(* Paste a video link, choose the quality, choose where it goes:      *)
+(*   My files        /root/<folder>                                    *)
+(*   Large storage   /mounted/<folder>                                 *)
+(*   A computer      any folder on a machine running the OcaltQL      *)
+(*                   Client, chosen with a folder picker              *)
+(*   This device     a download link for the phone or computer you    *)
+(*                   are using                                        *)
+(* A progress screen follows the download, then the result page plays *)
+(* the video and offers the file.                                     *)
+(*                                                                     *)
+(* ENGINE:   yt-dlp and FFmpeg, run in a WEBASSEMBLY Python sandbox.  *)
+(*           Installed once into SETTINGS ?home, refreshed by itself  *)
+(*           if YouTube changes and a download fails.                 *)
+(* PAGES:    one file, chosen by !GET("step"):                         *)
+(*             (none)    the form                                      *)
+(*             pick      folder picker for a computer                  *)
+(*             work      the progress screen                           *)
+(*             done      the result                                    *)
+(*             run, progress, status, forget   JSON and actions       *)
+(*                                                                     *)
+(* INSTALL:  put this file in a folder and give it a subdomain:       *)
+(*             SUBDOMAIN ADD "yousave" AT "/mounted/yousave"           *)
+(*           then open https://yousave.ocalt.site                     *)
+(*                                                                     *)
+(* A site answers anyone who has its address, and every download is   *)
+(* saved to your storage. Set ?access_pin below to keep it to you.    *)
+(* ================================================================= *)
+
+
+(* ================================================================= *)
+(* 1. SETTINGS                                                        *)
+(* ================================================================= *)
+
+STRING "" SET ?access_pin                 (* "" = open to anyone with the address *)
+AFTER STRING "/mounted/.yousave" SET ?home (* the engine, progress files, staging *)
+AFTER STRING "youtube" SET ?default_folder
+AFTER STRING "" SET ?device_only          (* "1" = a public copy: visitors can only
+                                             download to their own device, and
+                                             nothing is kept for long *)
+
+
+(* ================================================================= *)
+(* 2. READ INPUT                                                      *)
+(* ================================================================= *)
+
+AFTER STRING !GET("step") SET ?step
+AFTER STRING !GET("url") SET ?url
+AFTER TRIM STRING ?url SET ?url
+AFTER STRING !GET("quality") SET ?quality
+AFTER STRING !GET("to") SET ?to
+AFTER STRING !GET("folder") SET ?folder
+AFTER STRING !GET("machine") SET ?machine
+AFTER STRING !GET("mpath") SET ?mpath
+AFTER STRING !GET("job") SET ?job
+
+AFTER IF ?quality IS EMPTY
+OPEN
+  STRING "best" SET ?quality
+CLOSE
+
+AFTER IF ?to IS EMPTY
+OPEN
+  STRING "mounted" SET ?to
+CLOSE
+
+AFTER IF ?folder IS EMPTY
+OPEN
+  STRING ?default_folder SET ?folder
+CLOSE
+
+AFTER IF ?device_only IS NOT EMPTY
+OPEN
+  STRING "device" SET ?to
+  AFTER IF ?step IS EQUAL TO "pick"
+  OPEN
+    STRING "" SET ?step
+  CLOSE
+CLOSE
+
+(* A job id is a UUID made by this script. Anything else is ignored,
+   so a progress or result request can never name another file. *)
+
+AFTER STRING "" SET ?jobfile
+AFTER LENGTH ?job SET ?job_len
+AFTER IF ?job_len IS EQUAL TO 36
+OPEN
+  IF ?job CONTAINS "/" IS NOT TRUE AND ?job CONTAINS "." IS NOT TRUE
+  OPEN
+    STRING ?home & "/jobs/" & ?job & ".json" SET ?jobfile
+  CLOSE
+CLOSE
+
+AFTER ENCODE ?url AS URL SET ?e_url
+AFTER ENCODE ?folder AS URL SET ?e_folder
+AFTER ENCODE ?machine AS URL SET ?e_machine
+AFTER ENCODE ?mpath AS URL SET ?e_mpath
+
+(* Every page passes the choices on, so nothing typed is lost. *)
+AFTER STRING "url=" & ?e_url & "&quality=" & ?quality & "&to=" & ?to & "&folder=" & ?e_folder & "&machine=" & ?e_machine & "&mpath=" & ?e_mpath SET ?carry
+
+
+(* ================================================================= *)
+(* 3. ACCESS PIN                                                      *)
+(* ================================================================= *)
+
+AFTER STRING "1" SET ?allowed
+AFTER STRING "" SET ?pin_error
+
+AFTER IF ?access_pin IS NOT EMPTY
+OPEN
+
+  START SESSION
+
+  AFTER STRING !POST("pin") SET ?pin_try
+  AFTER IF ?pin_try IS NOT EMPTY
+  OPEN
+    IF ?pin_try IS EQUAL TO ?access_pin
+    OPEN
+      STRING "1" SET !SESSION("yousave_ok")
+    CLOSE
+    OR
+    OPEN
+      STRING "That PIN is not right." SET ?pin_error
+    CLOSE
+  CLOSE
+
+  AFTER STRING !SESSION("yousave_ok") SET ?ok
+  AFTER IF ?ok IS NOT EQUAL TO "1"
+  OPEN
+    STRING "" SET ?allowed
+  CLOSE
+
+CLOSE
+
+AFTER STRING "page" SET ?mode
+AFTER IF ?step IS EQUAL TO "run" OR ?step IS EQUAL TO "progress" OR ?step IS EQUAL TO "status"
+OPEN
+  STRING "json" SET ?mode
+CLOSE
+
+AFTER IF ?mode IS EQUAL TO "json"
+OPEN
+  HEADER "Content-Type" AS "application/json"
+  AFTER HEADER "Cache-Control" AS "no-store"
+CLOSE
+OR
+OPEN
+  HEADER "Content-Type" AS "text/html"
+  AFTER HEADER "Cache-Control" AS "no-store"
+CLOSE
+
+
+(* ================================================================= *)
+(* 4. JSON STEPS: run, progress, status                               *)
+(* ================================================================= *)
+
+AFTER IF ?mode IS EQUAL TO "json" AND ?allowed IS EMPTY
+OPEN
+  EMIT `{"status":"error","message":"Enter the PIN first."}`
+CLOSE
+
+AFTER IF ?mode IS EQUAL TO "json" AND ?allowed IS NOT EMPTY AND ?jobfile IS EMPTY
+OPEN
+  EMIT `{"status":"error","message":"This download has no job number. Start again from the form."}`
+CLOSE
+
+
+(* ----- progress: what the engine last wrote ----- *)
+
+AFTER IF ?step IS EQUAL TO "progress" AND ?allowed IS NOT EMPTY AND ?jobfile IS NOT EMPTY
+OPEN
+
+  FILE EXISTS ?jobfile SET ?has_job
+  AFTER IF ?has_job IS TRUE
+  OPEN
+    FILE READ ?jobfile SET ?raw
+    AFTER EMIT ?raw
+  CLOSE
+  OR
+  OPEN
+    EMIT `{"state":"waiting"}`
+  CLOSE
+
+CLOSE
+
+
+(* ----- run: download, then share it or send it on ----- *)
+
+AFTER IF ?step IS EQUAL TO "run" AND ?allowed IS NOT EMPTY AND ?jobfile IS NOT EMPTY
+OPEN
+
+  (* Where the engine writes the file *)
+  STRING "1" SET ?use_folder
+  AFTER STRING "/mounted" SET ?base
+  AFTER IF ?to IS EQUAL TO "root"
+  OPEN
+    STRING "/root" SET ?base
+  CLOSE
+  AFTER IF ?to IS EQUAL TO "device"
+  OPEN
+    STRING ?home & "/device" SET ?base
+    AFTER STRING "0" SET ?use_folder
+  CLOSE
+  AFTER IF ?to IS EQUAL TO "machine"
+  OPEN
+    STRING ?home & "/outbox" SET ?base
+    AFTER STRING "0" SET ?use_folder
+  CLOSE
+
+  AFTER STRING ?home & "/lib" SET ?libdir
+
+  AFTER WEBASSEMBLY GRANT ?url AS "url"
+  AFTER WEBASSEMBLY GRANT ?quality AS "quality"
+  AFTER WEBASSEMBLY GRANT ?libdir AS "libdir"
+  AFTER WEBASSEMBLY GRANT ?jobfile AS "jobfile"
+  AFTER WEBASSEMBLY GRANT ?base AS "base"
+  AFTER WEBASSEMBLY GRANT ?folder AS "folder"
+  AFTER WEBASSEMBLY GRANT ?use_folder AS "use_folder"
+
+  AFTER WEBASSEMBLY TYPE "python" ENTER `import os, sys, json, re, time, subprocess, importlib
+
+o = oql
+LIB = o["libdir"]
+JOB = o["jobfile"]
+URL = (o["url"] or "").strip()
+QUALITY = o["quality"] or "best"
+
+# Where the file lands: a folder under /root or /mounted, or the private
+# staging area when it is going on to a machine or to the person's device.
+folder = re.sub(r"[^A-Za-z0-9 _.-]", "", o["folder"] or "").strip(" .") or "youtube"
+OUT = o["base"].rstrip("/") + ("/" + folder if o["use_folder"] == "1" else "")
+
+for d in (LIB, OUT, os.path.dirname(JOB)):
+    os.makedirs(d, exist_ok=True)
+
+# Copies made for a device, and old progress files, are not kept past a day.
+for d in (os.path.dirname(JOB), os.path.join(os.path.dirname(os.path.dirname(JOB)), "device")):
+    if os.path.isdir(d):
+        for n in os.listdir(d):
+            p = os.path.join(d, n)
+            try:
+                if os.path.isfile(p) and time.time() - os.path.getmtime(p) > 86400:
+                    os.remove(p)
+            except OSError:
+                pass
+
+def note(**k):
+    k["at"] = time.time()
+    tmp = JOB + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(json.dumps(k))
+    os.replace(tmp, JOB)
+
+if not re.match(r"^https?://(www\.|m\.|music\.)?(youtube\.com/(watch\?|shorts/|live/)|youtu\.be/)", URL):
+    note(state="failed", message="That is not a YouTube video link.")
+    raise SystemExit("That is not a YouTube video link. Paste the address of one video, for example https://www.youtube.com/watch?v=...")
+
+sys.path.insert(0, LIB)
+
+def install(upgrade):
+    note(state="preparing", message="Getting the downloader ready. The first run takes a minute.")
+    cmd = [sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
+           "--target", LIB, "yt-dlp", "imageio-ffmpeg"]
+    if upgrade:
+        cmd.insert(4, "--upgrade")
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("The downloader could not be installed: " + r.stderr.strip()[-400:])
+    for m in [m for m in sys.modules if m.startswith(("yt_dlp", "imageio_ffmpeg"))]:
+        del sys.modules[m]
+    importlib.invalidate_caches()
+
+try:
+    import yt_dlp, imageio_ffmpeg
+except ImportError:
+    install(False)
+    import yt_dlp, imageio_ffmpeg
+
+FORMATS = {
+    "best":  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+    "1080":  "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]",
+    "720":   "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]",
+    "480":   "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]",
+    "audio": "bestaudio[ext=m4a]/bestaudio",
+}
+if QUALITY not in FORMATS:
+    QUALITY = "best"
+
+def hook(d):
+    info = d.get("info_dict") or {}
+    part = "sound" if info.get("vcodec") == "none" else "video"
+    if d["status"] == "downloading":
+        total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+        done = d.get("downloaded_bytes") or 0
+        note(state="downloading", part=part, title=info.get("title"),
+             percent=round(done * 100.0 / total, 1) if total else None,
+             downloaded=done, total=total, speed=d.get("speed"), eta=d.get("eta"))
+    elif d["status"] == "finished":
+        note(state="finishing", part=part, title=info.get("title"),
+             message="Putting the file together")
+
+class Quiet:
+    """yt-dlp talks a lot on its own; the page only needs the real error."""
+    def debug(self, m): pass
+    def info(self, m): pass
+    def warning(self, m): pass
+    def error(self, m): pass
+
+def run():
+    opts = {
+        "logger": Quiet(),
+        "format": FORMATS[QUALITY],
+        "outtmpl": OUT + "/%(title).120B.%(ext)s",
+        "windowsfilenames": True,
+        "merge_output_format": "mp4",
+        "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe(),
+        "noplaylist": True,
+        "overwrites": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "progress_hooks": [hook],
+    }
+    if QUALITY == "audio":
+        opts.pop("merge_output_format")
+        opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(URL, download=True)
+        got = (info.get("requested_downloads") or [{}])[0].get("filepath") or ydl.prepare_filename(info)
+        if QUALITY == "audio":
+            got = os.path.splitext(got)[0] + ".mp3"
+        return info, got
+
+note(state="starting", message="Looking up the video")
+try:
+    info, path = run()
+except Exception as first:
+    # YouTube changes often and yt-dlp follows it. One fresh copy, one retry.
+    try:
+        install(True)
+        import yt_dlp, imageio_ffmpeg
+        info, path = run()
+    except Exception as e:
+        msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("ERROR: ", "").strip()
+        note(state="failed", message=msg[:400])
+        raise SystemExit(msg[:400])
+
+size = os.path.getsize(path) if os.path.isfile(path) else 0
+result = {
+    "status": "done",
+    "title": info.get("title"),
+    "video_id": info.get("id"),
+    "channel": info.get("channel") or info.get("uploader"),
+    "duration": info.get("duration"),
+    "height": info.get("height"),
+    "thumbnail": info.get("thumbnail"),
+    "file": path,
+    "name": os.path.basename(path),
+    "folder": os.path.dirname(path),
+    "size": size,
+    "audio_only": QUALITY == "audio",
+}
+note(state="done", title=result["title"], file=path, size=size)
+print(json.dumps(result, ensure_ascii=False))
+` SET ?out OR CATCH ERROR SET ?err
+
+  AFTER IF ?err IS SET
+  OPEN
+
+    STRING ?err("message") SET ?msg
+    AFTER REPLACE STRING ONCE "exit code 1: " WITH "" WHERE ?msg SET ?msg
+    AFTER NEW OBJECT SET ?res
+    AFTER SET ?res("status") AS "error"
+    AFTER SET ?res("message") AS ?msg
+    AFTER EMIT ?res
+
+  CLOSE
+  OR
+  OPEN
+
+    PARSE ?out AS JSON SET ?res
+    AFTER SET ?res("to") AS ?to
+    AFTER SET ?res("job") AS ?job
+
+    (* To a computer: the client pulls it from the outbox in the background *)
+    AFTER IF ?to IS EQUAL TO "machine"
+    OPEN
+      STRING ?mpath & "/" & ?res("name") SET ?dest
+      AFTER REPLACE STRING ALL "//" WITH "/" WHERE ?dest SET ?dest
+      AFTER DIRECTIVE ?machine UPLOAD ?res("file") TO ?dest SET ?upl OR CATCH ERROR SET ?uerr
+      AFTER SET ?res("machine") AS ?machine
+      AFTER SET ?res("dest") AS ?dest
+      AFTER IF ?uerr IS SET
+      OPEN
+        SET ?res("send_error") AS ?uerr("message")
+      CLOSE
+      OR
+      OPEN
+        SET ?res("tid") AS ?upl("tid")
+      CLOSE
+    CLOSE
+
+    (* Everywhere else: a link, which plays it here and downloads it *)
+    OR
+    OPEN
+      FILE SHARE ?res("file") SET ?share OR CATCH ERROR SET ?serr
+      AFTER IF ?serr IS NOT SET
+      OPEN
+        SET ?res("share") AS ?share
+      CLOSE
+    CLOSE
+
+    AFTER CAST ?res AS JSON SET ?res_json
+    AFTER FILE WRITE ?res_json TO ?jobfile
+    AFTER EMIT ?res_json
+
+  CLOSE
+
+CLOSE
+
+
+(* ----- status: how far the copy to a computer has got ----- *)
+
+AFTER IF ?step IS EQUAL TO "status" AND ?allowed IS NOT EMPTY AND ?jobfile IS NOT EMPTY
+OPEN
+
+  FILE READ ?jobfile SET ?raw
+  AFTER PARSE ?raw AS JSON SET ?res
+  AFTER IF ?res("tid") IS SET
+  OPEN
+    DIRECTIVE STATUS ?res("tid") SET ?st OR CATCH ERROR SET ?sterr
+    AFTER IF ?sterr IS SET
+    OPEN
+      NEW OBJECT SET ?st
+      AFTER SET ?st("state") AS "unknown"
+      AFTER SET ?st("message") AS ?sterr("message")
+    CLOSE
+    (* Once it has landed the outbox copy is not needed *)
+    AFTER IF ?st("state") IS EQUAL TO "done"
+    OPEN
+      FILE EXISTS ?res("file") SET ?still
+      AFTER IF ?still IS TRUE
+      OPEN
+        FILE DELETE ?res("file")
+      CLOSE
+    CLOSE
+    AFTER EMIT ?st
+  CLOSE
+  OR
+  OPEN
+    EMIT `{"state":"none"}`
+  CLOSE
+
+CLOSE
+
+
+(* ----- forget: stop sharing, and remove a device-only copy ----- *)
+
+AFTER IF ?step IS EQUAL TO "forget" AND ?allowed IS NOT EMPTY AND ?jobfile IS NOT EMPTY
+OPEN
+
+  FILE READ ?jobfile SET ?raw
+  AFTER PARSE ?raw AS JSON SET ?res
+  AFTER FILE UNSHARE ?res("file") OR CATCH ERROR SET ?ignore
+  AFTER IF ?res("to") IS EQUAL TO "device"
+  OPEN
+    FILE DELETE ?res("file") OR CATCH ERROR SET ?ignore2
+  CLOSE
+  AFTER SET ?res("share") AS null
+  AFTER SET ?res("forgotten") AS true
+  AFTER CAST ?res AS JSON SET ?res_json
+  AFTER FILE WRITE ?res_json TO ?jobfile
+  AFTER STRING "done" SET ?step
+
+CLOSE
+
+
+(* ================================================================= *)
+(* 5. PAGE DATA                                                       *)
+(* ================================================================= *)
+
+AFTER STRING "" SET ?form_error
+AFTER STRING "YouSave" SET ?page_title
+
+(* ----- work: check the link, look the video up, give it a job ----- *)
+
+AFTER IF ?mode IS EQUAL TO "page" AND ?step IS EQUAL TO "work" AND ?allowed IS NOT EMPTY
+OPEN
+
+  IF ?url CONTAINS "youtube.com/" IS NOT TRUE AND ?url CONTAINS "youtu.be/" IS NOT TRUE
+  OPEN
+    STRING "Paste the address of a YouTube video, for example https://www.youtube.com/watch?v=..." SET ?form_error
+    AFTER STRING "" SET ?step
+  CLOSE
+
+  AFTER IF ?to IS EQUAL TO "machine" AND ?mpath IS EMPTY
+  OPEN
+    STRING "Choose a folder on the computer first." SET ?form_error
+    AFTER STRING "" SET ?step
+  CLOSE
+
+CLOSE
+
+AFTER STRING "" SET ?v_title
+AFTER STRING "" SET ?v_channel
+AFTER STRING "" SET ?v_thumb
+
+AFTER IF ?mode IS EQUAL TO "page" AND ?step IS EQUAL TO "work" AND ?allowed IS NOT EMPTY
+OPEN
+
+  GENERATE UUID SET ?job
+  AFTER STRING "https://www.youtube.com/oembed?format=json&url=" & ?e_url SET ?oembed
+  AFTER FETCH ?oembed SET ?meta_raw OR CATCH ERROR SET ?meta_err
+  AFTER PARSE ?meta_raw AS JSON SET ?meta OR CATCH ERROR SET ?meta_err
+  AFTER IF ?meta_err IS NOT SET
+  OPEN
+    STRING ?meta("title") SET ?v_title
+    AFTER STRING ?meta("author_name") SET ?v_channel
+    AFTER STRING ?meta("thumbnail_url") SET ?v_thumb
+  CLOSE
+  AFTER IF ?v_title IS EMPTY
+  OPEN
+    STRING "Your video" SET ?v_title
+  CLOSE
+  AFTER STRING "Saving " & ?v_title & " - YouSave" SET ?page_title
+
+CLOSE
+
+(* Where the file is going, in words *)
+AFTER STRING "Large storage, /mounted/" & ?folder SET ?where
+AFTER IF ?to IS EQUAL TO "root"
+OPEN
+  STRING "My files, /root/" & ?folder SET ?where
+CLOSE
+AFTER IF ?to IS EQUAL TO "device"
+OPEN
+  STRING "This device" SET ?where
+CLOSE
+AFTER IF ?to IS EQUAL TO "machine"
+OPEN
+  STRING ?machine & ", " & ?mpath SET ?where
+CLOSE
+
+(* ----- pick: computers, then drives, then folders ----- *)
+
+AFTER NEW ARRAY SET ?machines
+AFTER NEW ARRAY SET ?entries
+AFTER STRING "" SET ?pick_error
+AFTER STRING "" SET ?pick_stage
+
+AFTER IF ?mode IS EQUAL TO "page" AND ?step IS EQUAL TO "pick" AND ?allowed IS NOT EMPTY
+OPEN
+
+  IF ?machine IS EMPTY
+  OPEN
+
+    STRING "machines" SET ?pick_stage
+    AFTER DIRECTIVE LIST SET ?agents OR CATCH ERROR SET ?aerr
+    AFTER IF ?aerr IS NOT SET
+    OPEN
+      FOREACH ?agents("agents") SET ?a
+      OPEN
+        APPEND ?a TO ?machines
+      CLOSE
+    CLOSE
+
+  CLOSE
+  OR
+  OPEN
+
+    DIRECTIVE STATUS ?machine SET ?mst OR CATCH ERROR SET ?mserr
+    AFTER IF ?mserr IS SET OR ?mst("online") IS NOT TRUE
+    OPEN
+      STRING ?machine & " is not online right now. Open the OcaltQL Client on it, or choose another computer." SET ?pick_error
+      AFTER STRING "offline" SET ?pick_stage
+    CLOSE
+    OR
+    OPEN
+
+      IF ?mpath IS EMPTY
+      OPEN
+        STRING "drives" SET ?pick_stage
+        AFTER DIRECTIVE ?machine LIST DRIVES SET ?drives OR CATCH ERROR SET ?derr
+        AFTER IF ?derr IS SET
+        OPEN
+          STRING "Could not read the drives: " & ?derr("message") SET ?pick_error
+        CLOSE
+        OR
+        OPEN
+          FOREACH ?drives SET ?d
+          OPEN
+            NEW OBJECT SET ?e
+            AFTER SET ?e("name") AS ?d
+            AFTER SET ?e("path") AS ?d
+            AFTER APPEND ?e TO ?entries
+          CLOSE
+        CLOSE
+      CLOSE
+      OR
+      OPEN
+        STRING "folders" SET ?pick_stage
+        AFTER DIRECTIVE ?machine LIST FROM ?mpath SET ?items OR CATCH ERROR SET ?lerr
+        AFTER IF ?lerr IS SET
+        OPEN
+          STRING "Could not open that folder: " & ?lerr("message") SET ?pick_error
+        CLOSE
+        OR
+        OPEN
+          FOREACH ?items SET ?it
+          OPEN
+            IF ?it("is_dir") IS TRUE
+            OPEN
+              STRING ?mpath & "/" & ?it("name") SET ?child
+              AFTER REPLACE STRING ALL "//" WITH "/" WHERE ?child SET ?child
+              AFTER NEW OBJECT SET ?e
+              AFTER SET ?e("name") AS ?it("name")
+              AFTER SET ?e("path") AS ?child
+              AFTER APPEND ?e TO ?entries
+            CLOSE
+          CLOSE
+        CLOSE
+      CLOSE
+
+    CLOSE
+
+  CLOSE
+
+CLOSE
+
+(* ----- done: what the run left in the job file ----- *)
+
+AFTER NEW OBJECT SET ?res
+AFTER IF ?mode IS EQUAL TO "page" AND ?step IS EQUAL TO "done" AND ?allowed IS NOT EMPTY AND ?jobfile IS NOT EMPTY
+OPEN
+  FILE EXISTS ?jobfile SET ?has_job
+  AFTER IF ?has_job IS TRUE
+  OPEN
+    FILE READ ?jobfile SET ?raw
+    AFTER PARSE ?raw AS JSON SET ?res
+    AFTER STRING ?res("title") & " - YouSave" SET ?page_title
+  CLOSE
+CLOSE
+
+AFTER STRING "" SET ?r_kind
+AFTER IF ?res("audio_only") IS TRUE
+OPEN
+  STRING "audio" SET ?r_kind
+CLOSE
+OR
+OPEN
+  STRING "video" SET ?r_kind
+CLOSE
+
+
+(* ================================================================= *)
+(* 6. THE PAGE                                                        *)
+(* ================================================================= *)
+
+AFTER IF ?mode IS EQUAL TO "page"
+OPEN
+
+  NEW HTML SET ?page
+  OPEN
+
+    HTML "head"
+    OPEN
+
+      HTML "meta"
+        ATTR "charset" WITH "utf-8"
+
+      AFTER HTML "meta"
+        ATTR "name" WITH "viewport"
+        AND ATTR "content" WITH "width=device-width, initial-scale=1"
+
+      AFTER HTML "meta"
+        ATTR "name" WITH "color-scheme"
+        AND ATTR "content" WITH "light dark"
+
+      AFTER HTML "link"
+        ATTR "rel" WITH "icon"
+        AND ATTR "href" WITH "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23e5383b'/%3E%3Cpath d='M16 8v11m-5-5 5 5 5-5M10 24h12' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+
+      AFTER HTML "title"
+        TEXT ?page_title
+
+      AFTER HTML "style"
+      TEXT `
+        :root {
+          --bg: #eef1f5; --card: #ffffff; --ink: #0f172a; --muted: #5b6474; --line: #dde2ea;
+          --field: #f6f8fb; --accent: #e5383b; --accent-ink: #ffffff; --soft: #fde8e8;
+          --ok: #15803d; --shadow: 0 1px 2px rgba(15,23,42,.06), 0 12px 32px rgba(15,23,42,.08);
+        }
+        @media (prefers-color-scheme: dark) {
+          :root {
+            --bg: #0b0f16; --card: #141a23; --ink: #e8edf4; --muted: #95a0b2; --line: #263041;
+            --field: #0f141c; --accent: #ff5a5f; --accent-ink: #ffffff; --soft: #3a1416;
+            --ok: #4ade80; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
+          }
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; background: var(--bg); color: var(--ink); }
+        body { font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; min-height: 100vh; }
+        a { color: inherit; }
+        .wrap { max-width: 640px; margin: 0 auto; padding: 32px 16px 64px; }
+        .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; font-size: 22px; letter-spacing: -.02em; text-decoration: none; margin-bottom: 24px; }
+        .brand i { width: 30px; height: 30px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; }
+        .brand i::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
+        .card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 24px; box-shadow: var(--shadow); }
+        h1 { font-size: 30px; line-height: 1.15; letter-spacing: -.03em; margin: 0 0 6px; }
+        .lead { color: var(--muted); margin: 0 0 22px; }
+        label.k { display: block; font-weight: 650; font-size: 14px; margin: 20px 0 8px; }
+        input[type=url], input[type=text], input[type=password] {
+          width: 100%; font: inherit; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--line);
+          background: var(--field); color: var(--ink); outline: none; }
+        input:focus-visible, button:focus-visible, .opt:focus-within, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .seg { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+        .seg label { position: relative; }
+        .seg input, .opts input { position: absolute; opacity: 0; pointer-events: none; }
+        .seg span { display: block; text-align: center; padding: 10px 4px; border-radius: 10px; border: 1px solid var(--line); font-size: 14px; font-weight: 600; cursor: pointer; background: var(--field); }
+        .seg input:checked + span { background: var(--ink); color: var(--card); border-color: var(--ink); }
+        .opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .opt { position: relative; display: block; border: 1px solid var(--line); border-radius: 14px; padding: 14px; cursor: pointer; background: var(--field); }
+        .opt b { display: block; font-size: 15px; }
+        .opt small { color: var(--muted); font-size: 13px; }
+        .opt:has(input:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--soft); }
+        .more { margin-top: 12px; display: none; }
+        .more.show { display: block; }
+        .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .pathbox { flex: 1; min-width: 0; padding: 12px 14px; border-radius: 12px; border: 1px dashed var(--line); color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font: inherit; font-weight: 650; padding: 13px 20px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; text-decoration: none; }
+        .btn.main { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); width: 100%; margin-top: 24px; font-size: 17px; padding: 16px; }
+        .btn.small { padding: 10px 14px; font-size: 14px; }
+        .err { background: var(--soft); color: var(--accent); border-radius: 12px; padding: 12px 14px; margin: 0 0 16px; font-weight: 600; }
+        .note { color: var(--muted); font-size: 13px; margin-top: 10px; }
+        .foot { color: var(--muted); font-size: 13px; text-align: center; margin-top: 24px; }
+
+        .video { display: grid; grid-template-columns: 168px 1fr; gap: 16px; align-items: center; }
+        .thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 12px; background: var(--field); display: block; }
+        .vt { font-weight: 700; font-size: 18px; line-height: 1.3; margin: 0 0 4px; overflow-wrap: anywhere; }
+        .vc { color: var(--muted); font-size: 14px; margin: 0; }
+        .bar { height: 12px; border-radius: 99px; background: var(--field); border: 1px solid var(--line); overflow: hidden; margin: 24px 0 10px; }
+        .bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .4s ease; }
+        .bar.busy i { width: 35% !important; animation: slide 1.2s ease-in-out infinite; }
+        @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+        .state { font-weight: 650; margin: 0; }
+        .facts { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-top: 6px; }
+        .player { width: 100%; border-radius: 14px; background: #000; display: block; margin-bottom: 18px; }
+        audio.player { background: transparent; }
+        .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
+        .actions .wide { grid-column: 1 / -1; }
+        .list { list-style: none; padding: 0; margin: 16px 0 0; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+        .list li + li { border-top: 1px solid var(--line); }
+        .list a { display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; text-decoration: none; }
+        .list a:hover { background: var(--field); }
+        .list small { color: var(--muted); }
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; background: var(--muted); }
+        .dot.on { background: var(--ok); }
+        @media (max-width: 520px) {
+          .seg { grid-template-columns: repeat(3, 1fr); }
+          .opts { grid-template-columns: 1fr; }
+          .video { grid-template-columns: 1fr; }
+          .actions { grid-template-columns: 1fr; }
+          h1 { font-size: 26px; }
+        }
+        @media (prefers-reduced-motion: reduce) { .bar.busy i { animation: none; width: 100% !important; opacity: .5; } }
+      `
+
+    CLOSE
+
+    AFTER HTML "body"
+      ATTR "data-step" WITH ?step
+      AND ATTR "data-to" WITH ?to
+      AND ATTR "data-quality" WITH ?quality
+      AND ATTR "data-job" WITH ?job
+      AND ATTR "data-carry" WITH ?carry
+    OPEN
+
+      HTML "main"
+        ATTR "class" WITH "wrap"
+      OPEN
+
+        HTML "a"
+          ATTR "class" WITH "brand"
+          AND ATTR "href" WITH "?"
+        OPEN
+          HTML "i"
+          AFTER HTML TEXT NODE "YouSave"
+        CLOSE
+
+
+        (* ----- PIN ----- *)
+
+        AFTER IF ?allowed IS EMPTY
+        OPEN
+
+          HTML "form"
+            ATTR "class" WITH "card"
+            AND ATTR "method" WITH "POST"
+            AND ATTR "action" WITH ""
+          OPEN
+
+            HTML "h1"
+              TEXT "Enter your PIN"
+
+            AFTER HTML "p"
+              ATTR "class" WITH "lead"
+              TEXT "This YouSave saves videos to someone's own storage, so it asks for their PIN."
+
+            AFTER IF ?pin_error IS NOT EMPTY
+            OPEN
+              HTML "p"
+                ATTR "class" WITH "err"
+                TEXT ?pin_error
+            CLOSE
+
+            AFTER HTML "input"
+              ATTR "type" WITH "password"
+              AND ATTR "name" WITH "pin"
+              AND ATTR "aria-label" WITH "PIN"
+              AND ATTR "autocomplete" WITH "current-password"
+              AND ATTR "autofocus" WITH "autofocus"
+              AND ATTR "required" WITH "required"
+
+            AFTER HTML "button"
+              ATTR "class" WITH "btn main"
+              AND ATTR "type" WITH "submit"
+              TEXT "Continue"
+
+          CLOSE
+
+        CLOSE
+
+
+        (* ----- THE FORM ----- *)
+
+        AFTER IF ?allowed IS NOT EMPTY AND ?step IS EMPTY
+        OPEN
+
+          HTML "form"
+            ATTR "class" WITH "card"
+            AND ATTR "method" WITH "GET"
+            AND ATTR "action" WITH ""
+            AND ATTR "id" WITH "f"
+          OPEN
+
+            HTML "h1"
+              TEXT "Save a YouTube video"
+
+            AFTER HTML "p"
+              ATTR "class" WITH "lead"
+              TEXT "Paste the link, pick the quality and where it should go. It downloads in the background while you watch."
+
+            AFTER IF ?form_error IS NOT EMPTY
+            OPEN
+              HTML "p"
+                ATTR "class" WITH "err"
+                TEXT ?form_error
+            CLOSE
+
+            AFTER HTML "input"
+              ATTR "type" WITH "url"
+              AND ATTR "name" WITH "url"
+              AND ATTR "value" WITH ?url
+              AND ATTR "placeholder" WITH "https://www.youtube.com/watch?v=..."
+              AND ATTR "aria-label" WITH "YouTube video link"
+              AND ATTR "autocomplete" WITH "off"
+              AND ATTR "autofocus" WITH "autofocus"
+
+            AFTER HTML "label"
+              ATTR "class" WITH "k"
+              TEXT "Quality"
+
+            AFTER HTML "div"
+              ATTR "class" WITH "seg"
+              AND ATTR "role" WITH "radiogroup"
+              AND ATTR "aria-label" WITH "Quality"
+            OPEN
+              HTML "label"
+              OPEN
+                HTML "input"
+                  ATTR "type" WITH "radio" AND ATTR "name" WITH "quality" AND ATTR "value" WITH "best"
+                AFTER HTML "span"
+                  TEXT "Best"
+              CLOSE
+              AFTER HTML "label"
+              OPEN
+                HTML "input"
+                  ATTR "type" WITH "radio" AND ATTR "name" WITH "quality" AND ATTR "value" WITH "1080"
+                AFTER HTML "span"
+                  TEXT "1080p"
+              CLOSE
+              AFTER HTML "label"
+              OPEN
+                HTML "input"
+                  ATTR "type" WITH "radio" AND ATTR "name" WITH "quality" AND ATTR "value" WITH "720"
+                AFTER HTML "span"
+                  TEXT "720p"
+              CLOSE
+              AFTER HTML "label"
+              OPEN
+                HTML "input"
+                  ATTR "type" WITH "radio" AND ATTR "name" WITH "quality" AND ATTR "value" WITH "480"
+                AFTER HTML "span"
+                  TEXT "480p"
+              CLOSE
+              AFTER HTML "label"
+              OPEN
+                HTML "input"
+                  ATTR "type" WITH "radio" AND ATTR "name" WITH "quality" AND ATTR "value" WITH "audio"
+                AFTER HTML "span"
+                  TEXT "MP3"
+              CLOSE
+            CLOSE
+
+            AFTER IF ?device_only IS EMPTY
+            OPEN
+                HTML "label"
+                  ATTR "class" WITH "k"
+                  TEXT "Save to"
+
+              AFTER HTML "div"
+                ATTR "class" WITH "opts"
+              OPEN
+                HTML "label"
+                  ATTR "class" WITH "opt"
+                OPEN
+                  HTML "input"
+                    ATTR "type" WITH "radio" AND ATTR "name" WITH "to" AND ATTR "value" WITH "mounted"
+                  AFTER HTML "b"
+                    TEXT "Large storage"
+                  AFTER HTML "small"
+                    TEXT "/mounted, room for long videos"
+                CLOSE
+                AFTER HTML "label"
+                  ATTR "class" WITH "opt"
+                OPEN
+                  HTML "input"
+                    ATTR "type" WITH "radio" AND ATTR "name" WITH "to" AND ATTR "value" WITH "root"
+                  AFTER HTML "b"
+                    TEXT "My files"
+                  AFTER HTML "small"
+                    TEXT "/root, 1 GB on every plan"
+                CLOSE
+                AFTER HTML "label"
+                  ATTR "class" WITH "opt"
+                OPEN
+                  HTML "input"
+                    ATTR "type" WITH "radio" AND ATTR "name" WITH "to" AND ATTR "value" WITH "machine"
+                  AFTER HTML "b"
+                    TEXT "One of my computers"
+                  AFTER HTML "small"
+                    TEXT "Any folder, through the OcaltQL Client"
+                CLOSE
+                AFTER HTML "label"
+                  ATTR "class" WITH "opt"
+                OPEN
+                  HTML "input"
+                    ATTR "type" WITH "radio" AND ATTR "name" WITH "to" AND ATTR "value" WITH "device"
+                  AFTER HTML "b"
+                    TEXT "This device"
+                  AFTER HTML "small"
+                    TEXT "Download it straight here"
+                CLOSE
+              CLOSE
+
+              (* Folder name for /root and /mounted *)
+              AFTER HTML "div"
+                ATTR "class" WITH "more"
+                AND ATTR "id" WITH "m-folder"
+              OPEN
+                HTML "label"
+                  ATTR "class" WITH "k"
+                  AND ATTR "for" WITH "folder"
+                  TEXT "Folder"
+                AFTER HTML "input"
+                  ATTR "type" WITH "text"
+                  AND ATTR "id" WITH "folder"
+                  AND ATTR "name" WITH "folder"
+                  AND ATTR "value" WITH ?folder
+                  AND ATTR "maxlength" WITH "60"
+              CLOSE
+
+              (* A folder on a computer *)
+              AFTER HTML "div"
+                ATTR "class" WITH "more"
+                AND ATTR "id" WITH "m-machine"
+              OPEN
+                HTML "input"
+                  ATTR "type" WITH "hidden" AND ATTR "name" WITH "machine" AND ATTR "value" WITH ?machine
+                AFTER HTML "input"
+                  ATTR "type" WITH "hidden" AND ATTR "name" WITH "mpath" AND ATTR "value" WITH ?mpath
+                AFTER HTML "div"
+                  ATTR "class" WITH "row"
+                OPEN
+                  IF ?mpath IS NOT EMPTY
+                  OPEN
+                    HTML "div"
+                      ATTR "class" WITH "pathbox"
+                      TEXT ?machine & "  ·  " & ?mpath
+                  CLOSE
+                  OR
+                  OPEN
+                    HTML "div"
+                      ATTR "class" WITH "pathbox"
+                      TEXT "No folder chosen yet"
+                  CLOSE
+                  AFTER HTML "button"
+                    ATTR "class" WITH "btn small"
+                    AND ATTR "type" WITH "submit"
+                    AND ATTR "name" WITH "step"
+                    AND ATTR "value" WITH "pick"
+                    AND ATTR "formnovalidate" WITH "formnovalidate"
+                    TEXT "Choose a folder"
+                CLOSE
+              CLOSE
+
+              AFTER HTML "div"
+                ATTR "class" WITH "more"
+                AND ATTR "id" WITH "m-device"
+              OPEN
+                HTML "p"
+                  ATTR "class" WITH "note"
+                  TEXT "When it is ready you get a download button and a link you can open on any device. Remove it from the cloud afterwards with one tap."
+              CLOSE
+
+            CLOSE
+            OR
+            OPEN
+              HTML "input"
+                ATTR "type" WITH "hidden" AND ATTR "name" WITH "to" AND ATTR "value" WITH "device"
+              AFTER HTML "p"
+                ATTR "class" WITH "note"
+                TEXT "It downloads to the device you are using. The copy on the server is removed within a day."
+            CLOSE
+
+            AFTER HTML "button"
+              ATTR "class" WITH "btn main"
+              AND ATTR "type" WITH "submit"
+              AND ATTR "name" WITH "step"
+              AND ATTR "value" WITH "work"
+              TEXT "Save video"
+
+          CLOSE
+
+          AFTER HTML "p"
+            ATTR "class" WITH "foot"
+            TEXT "Made with OcaltQL. Save only videos you have the right to keep."
+
+        CLOSE
+
+
+        (* ----- FOLDER PICKER ----- *)
+
+        AFTER IF ?allowed IS NOT EMPTY AND ?step IS EQUAL TO "pick"
+        OPEN
+
+          HTML "section"
+            ATTR "class" WITH "card"
+          OPEN
+
+            IF ?pick_stage IS EQUAL TO "machines"
+            OPEN
+              HTML "h1"
+                TEXT "Choose a computer"
+              AFTER HTML "p"
+                ATTR "class" WITH "lead"
+                TEXT "These are the computers linked to your account with the OcaltQL Client."
+              AFTER COUNT ?machines SET ?mcount
+              AFTER IF ?mcount IS EQUAL TO 0
+              OPEN
+                HTML "p"
+                  ATTR "class" WITH "err"
+                  TEXT "No computers are linked yet. Install the OcaltQL Client from client.ocalt.com and sign in on the computer."
+              CLOSE
+              OR
+              OPEN
+                HTML "ul"
+                  ATTR "class" WITH "list"
+                OPEN
+                  FOREACH ?machines SET ?m
+                  OPEN
+                    ENCODE ?m("machine_id") AS URL SET ?em
+                    AFTER STRING "?step=pick&url=" & ?e_url & "&quality=" & ?quality & "&to=machine&folder=" & ?e_folder & "&machine=" & ?em SET ?href
+                    AFTER STRING "dot" SET ?dc
+                    AFTER STRING "offline" SET ?ds
+                    AFTER IF ?m("online") IS TRUE
+                    OPEN
+                      STRING "dot on" SET ?dc
+                      AFTER STRING "online" SET ?ds
+                    CLOSE
+                    AFTER HTML "li"
+                    OPEN
+                      HTML "a"
+                        ATTR "href" WITH ?href
+                      OPEN
+                        HTML "span"
+                        OPEN
+                          HTML "i"
+                            ATTR "class" WITH ?dc
+                          AFTER HTML TEXT NODE ?m("machine_id")
+                        CLOSE
+                        AFTER HTML "small"
+                          TEXT ?ds
+                      CLOSE
+                    CLOSE
+                  CLOSE
+                CLOSE
+              CLOSE
+            CLOSE
+
+            OR
+            OPEN
+
+              HTML "h1"
+                TEXT ?machine
+              AFTER HTML "p"
+                ATTR "class" WITH "lead"
+                TEXT "Open a folder, then choose Save here."
+
+              AFTER IF ?pick_error IS NOT EMPTY
+              OPEN
+                HTML "p"
+                  ATTR "class" WITH "err"
+                  TEXT ?pick_error
+              CLOSE
+
+              AFTER IF ?mpath IS NOT EMPTY
+              OPEN
+                HTML "div"
+                  ATTR "class" WITH "row"
+                OPEN
+                  HTML "div"
+                    ATTR "class" WITH "pathbox"
+                    TEXT ?mpath
+                  AFTER HTML "a"
+                    ATTR "class" WITH "btn small"
+                    AND ATTR "href" WITH "?" & ?carry
+                    TEXT "Save here"
+                CLOSE
+              CLOSE
+
+              AFTER HTML "ul"
+                ATTR "class" WITH "list"
+              OPEN
+                FOREACH ?entries SET ?e
+                OPEN
+                  ENCODE ?e("path") AS URL SET ?ep
+                  AFTER HTML "li"
+                  OPEN
+                    HTML "a"
+                      ATTR "href" WITH "?step=pick&url=" & ?e_url & "&quality=" & ?quality & "&to=machine&folder=" & ?e_folder & "&machine=" & ?e_machine & "&mpath=" & ?ep
+                    OPEN
+                      HTML "span"
+                        TEXT ?e("name")
+                      AFTER HTML "small"
+                        TEXT "Open"
+                    CLOSE
+                  CLOSE
+                CLOSE
+              CLOSE
+
+              AFTER HTML "div"
+                ATTR "class" WITH "actions"
+              OPEN
+                HTML "a"
+                  ATTR "class" WITH "btn"
+                  AND ATTR "href" WITH "?step=pick&url=" & ?e_url & "&quality=" & ?quality & "&to=machine&folder=" & ?e_folder & "&machine=" & ?e_machine
+                  TEXT "Back to drives"
+                AFTER HTML "a"
+                  ATTR "class" WITH "btn"
+                  AND ATTR "href" WITH "?step=pick&url=" & ?e_url & "&quality=" & ?quality & "&to=machine&folder=" & ?e_folder
+                  TEXT "Other computers"
+              CLOSE
+
+            CLOSE
+
+          CLOSE
+
+        CLOSE
+
+
+        (* ----- PROGRESS SCREEN ----- *)
+
+        AFTER IF ?allowed IS NOT EMPTY AND ?step IS EQUAL TO "work"
+        OPEN
+
+          HTML "section"
+            ATTR "class" WITH "card"
+            AND ATTR "id" WITH "work"
+            AND ATTR "data-run" WITH "?step=run&job=" & ?job & "&" & ?carry
+            AND ATTR "data-progress" WITH "?step=progress&job=" & ?job
+            AND ATTR "data-done" WITH "?step=done&job=" & ?job
+          OPEN
+
+            HTML "div"
+              ATTR "class" WITH "video"
+            OPEN
+              HTML "img"
+                ATTR "class" WITH "thumb"
+                AND ATTR "src" WITH ?v_thumb
+                AND ATTR "alt" WITH ""
+              AFTER HTML "div"
+              OPEN
+                HTML "p"
+                  ATTR "class" WITH "vt"
+                  TEXT ?v_title
+                AFTER HTML "p"
+                  ATTR "class" WITH "vc"
+                  TEXT ?v_channel
+              CLOSE
+            CLOSE
+
+            AFTER HTML "div"
+              ATTR "class" WITH "bar busy"
+              AND ATTR "id" WITH "bar"
+              AND ATTR "role" WITH "progressbar"
+              AND ATTR "aria-label" WITH "Download progress"
+            OPEN
+              HTML "i"
+            CLOSE
+
+            AFTER HTML "p"
+              ATTR "class" WITH "state"
+              AND ATTR "id" WITH "state"
+              AND ATTR "aria-live" WITH "polite"
+              TEXT "Starting"
+
+            AFTER HTML "div"
+              ATTR "class" WITH "facts"
+            OPEN
+              HTML "span"
+                ATTR "id" WITH "f-size"
+              AFTER HTML "span"
+                ATTR "id" WITH "f-speed"
+              AFTER HTML "span"
+                ATTR "id" WITH "f-eta"
+            CLOSE
+
+            AFTER HTML "p"
+              ATTR "class" WITH "note"
+              TEXT "Saving to " & ?where & ". You can leave this page open in the background."
+
+          CLOSE
+
+        CLOSE
+
+
+        (* ----- RESULT ----- *)
+
+        AFTER IF ?allowed IS NOT EMPTY AND ?step IS EQUAL TO "done"
+        OPEN
+
+          IF ?res("file") IS NOT SET
+          OPEN
+            HTML "section"
+              ATTR "class" WITH "card"
+            OPEN
+              HTML "h1"
+                TEXT "Nothing here"
+              AFTER HTML "p"
+                ATTR "class" WITH "lead"
+                TEXT "This download is not on record. It may still be running, or it was started somewhere else."
+              AFTER HTML "a"
+                ATTR "class" WITH "btn main"
+                AND ATTR "href" WITH "?"
+                TEXT "Save a video"
+            CLOSE
+          CLOSE
+          OR
+          OPEN
+
+            HTML "section"
+              ATTR "class" WITH "card"
+              AND ATTR "id" WITH "done"
+              AND ATTR "data-size" WITH ?res("size")
+              AND ATTR "data-duration" WITH ?res("duration")
+              AND ATTR "data-height" WITH ?res("height")
+              AND ATTR "data-tid" WITH ?res("tid")
+              AND ATTR "data-status" WITH "?step=status&job=" & ?job
+            OPEN
+
+              IF ?res("share") IS SET
+              OPEN
+                IF ?r_kind IS EQUAL TO "audio"
+                OPEN
+                  HTML "audio"
+                    ATTR "class" WITH "player"
+                    AND ATTR "controls" WITH "controls"
+                    AND ATTR "src" WITH ?res("share")
+                CLOSE
+                OR
+                OPEN
+                  HTML "video"
+                    ATTR "class" WITH "player"
+                    AND ATTR "controls" WITH "controls"
+                    AND ATTR "playsinline" WITH "playsinline"
+                    AND ATTR "preload" WITH "metadata"
+                    AND ATTR "poster" WITH ?res("thumbnail")
+                    AND ATTR "src" WITH ?res("share")
+                CLOSE
+              CLOSE
+              OR
+              OPEN
+                HTML "img"
+                  ATTR "class" WITH "thumb"
+                  AND ATTR "src" WITH ?res("thumbnail")
+                  AND ATTR "alt" WITH ""
+                  AND ATTR "style" WITH "margin-bottom:18px"
+              CLOSE
+
+              AFTER HTML "h1"
+                TEXT ?res("title")
+
+              AFTER HTML "p"
+                ATTR "class" WITH "vc"
+                TEXT ?res("channel")
+
+              AFTER HTML "div"
+                ATTR "class" WITH "facts"
+                AND ATTR "id" WITH "facts"
+
+              AFTER IF ?res("to") IS EQUAL TO "machine"
+              OPEN
+
+                HTML "div"
+                  ATTR "class" WITH "bar busy"
+                  AND ATTR "id" WITH "bar"
+                OPEN
+                  HTML "i"
+                CLOSE
+                AFTER HTML "p"
+                  ATTR "class" WITH "state"
+                  AND ATTR "id" WITH "state"
+                  AND ATTR "aria-live" WITH "polite"
+                  TEXT "Sending to " & ?res("machine")
+                AFTER HTML "p"
+                  ATTR "class" WITH "note"
+                  TEXT "Arriving at " & ?res("dest")
+                AFTER IF ?res("send_error") IS SET
+                OPEN
+                  HTML "p"
+                    ATTR "class" WITH "err"
+                    TEXT "It could not be sent: " & ?res("send_error") & " The file is kept at " & ?res("file") & "."
+                CLOSE
+
+              CLOSE
+              OR IF ?res("to") IS EQUAL TO "device"
+              OPEN
+
+                HTML "p"
+                  ATTR "class" WITH "note"
+                  TEXT "Ready to download. The copy on the server is removed within a day, or straight away with Remove from the cloud."
+
+              CLOSE
+              OR
+              OPEN
+
+                HTML "p"
+                  ATTR "class" WITH "note"
+                  TEXT "Saved as " & ?res("file")
+
+              CLOSE
+
+              AFTER HTML "div"
+                ATTR "class" WITH "actions"
+              OPEN
+
+                IF ?res("share") IS SET
+                OPEN
+                  HTML "a"
+                    ATTR "class" WITH "btn main wide"
+                    AND ATTR "href" WITH ?res("share")
+                    AND ATTR "download" WITH ?res("name")
+                    TEXT "Download to this device"
+                  AFTER HTML "button"
+                    ATTR "class" WITH "btn"
+                    AND ATTR "type" WITH "button"
+                    AND ATTR "id" WITH "copy"
+                    AND ATTR "data-link" WITH ?res("share")
+                    TEXT "Copy link"
+                  AFTER IF ?res("to") IS EQUAL TO "device"
+                  OPEN
+                    HTML "a"
+                      ATTR "class" WITH "btn"
+                      AND ATTR "href" WITH "?step=forget&job=" & ?job
+                      TEXT "Remove from the cloud"
+                  CLOSE
+                  OR
+                  OPEN
+                    HTML "a"
+                      ATTR "class" WITH "btn"
+                      AND ATTR "href" WITH "?step=forget&job=" & ?job
+                      TEXT "Stop sharing"
+                  CLOSE
+                CLOSE
+
+                AFTER IF ?res("forgotten") IS TRUE
+                OPEN
+                  HTML "p"
+                    ATTR "class" WITH "note wide"
+                    TEXT "The link is switched off. A copy saved to your files stays where it is; a copy made only for this device is deleted."
+                CLOSE
+
+                AFTER HTML "a"
+                  ATTR "class" WITH "btn wide"
+                  AND ATTR "href" WITH "?"
+                  TEXT "Save another video"
+
+              CLOSE
+
+            CLOSE
+
+          CLOSE
+
+        CLOSE
+
+      CLOSE
+
+      AFTER HTML "script"
+      TEXT `
+        (function () {
+          var b = document.body, step = b.dataset.step;
+          function mb(n) { return n >= 1073741824 ? (n / 1073741824).toFixed(2) + " GB" : (n / 1048576).toFixed(1) + " MB"; }
+          function time(s) { s = Math.round(s); var m = Math.floor(s / 60), r = s % 60; return m + ":" + (r < 10 ? "0" : "") + r; }
+
+          /* The form: put back the choices, show the part each destination needs */
+          var f = document.getElementById("f");
+          if (f) {
+            var q = f.querySelector("input[name=quality][value='" + b.dataset.quality + "']") || f.querySelector("input[name=quality]");
+            q.checked = true;
+            var t = f.querySelector("input[name=to][type=radio][value='" + b.dataset.to + "']") || f.querySelector("input[name=to][type=radio]");
+            if (t) t.checked = true;
+            var show = function () {
+              if (!t) return;
+              var to = f.querySelector("input[name=to]:checked").value;
+              document.getElementById("m-folder").classList.toggle("show", to === "root" || to === "mounted");
+              document.getElementById("m-machine").classList.toggle("show", to === "machine");
+              document.getElementById("m-device").classList.toggle("show", to === "device");
+            };
+            f.addEventListener("change", show); show();
+            f.addEventListener("submit", function (e) {
+              var go = e.submitter && e.submitter.value;
+              var url = f.url.value.trim();
+              if (go === "work" && !url) { e.preventDefault(); f.url.focus(); }
+            });
+          }
+
+          /* The progress screen: start the download, watch it, then show the result */
+          var w = document.getElementById("work");
+          if (w) {
+            var bar = document.getElementById("bar"), fill = bar.firstChild, st = document.getElementById("state");
+            var finished = false, last = 0;
+            var say = function (text) { st.textContent = text; };
+            var done = function () { finished = true; location.replace(w.dataset.done); };
+            var fail = function (msg) {
+              finished = true; bar.classList.remove("busy"); fill.style.width = "0";
+              say("It did not download. " + (msg || ""));
+              var a = document.createElement("a"); a.className = "btn"; a.href = "?" + b.dataset.carry; a.textContent = "Try again";
+              a.style.marginTop = "16px"; w.appendChild(a);
+            };
+            fetch(w.dataset.run, { credentials: "same-origin" }).then(function (r) { return r.json(); }).then(function (j) {
+              if (j.status === "done") done(); else fail(j.message);
+            }).catch(function () { /* a long download can outlast the request; the progress file still says when it is done */ });
+            var poll = function () {
+              if (finished) return;
+              fetch(w.dataset.progress, { credentials: "same-origin", cache: "no-store" }).then(function (r) { return r.json(); }).then(function (p) {
+                if (finished) return;
+                if (p.state === "downloading") {
+                  if (p.percent != null) { bar.classList.remove("busy"); fill.style.width = p.percent + "%"; bar.setAttribute("aria-valuenow", p.percent); }
+                  say((p.part === "sound" ? "Downloading the sound" : "Downloading") + (p.percent != null ? ", " + Math.round(p.percent) + "%" : ""));
+                  document.getElementById("f-size").textContent = p.total ? mb(p.downloaded) + " of " + mb(p.total) : mb(p.downloaded || 0);
+                  document.getElementById("f-speed").textContent = p.speed ? mb(p.speed) + "/s" : "";
+                  document.getElementById("f-eta").textContent = p.eta != null ? time(p.eta) + " left" : "";
+                } else if (p.state === "finishing") { bar.classList.add("busy"); say(p.message || "Putting the file together"); }
+                else if (p.state === "preparing" || p.state === "starting") { say(p.message || "Starting"); }
+                else if (p.state === "failed") { fail(p.message); return; }
+                else if (p.state === "done" && p.share !== undefined || p.status === "done") { done(); return; }
+                last = Date.now();
+              }).catch(function () {}).then(function () { setTimeout(poll, 1200); });
+            };
+            setTimeout(poll, 800);
+          }
+
+          /* The result: tidy facts, copy the link, follow a copy to a computer */
+          var d = document.getElementById("done");
+          if (d) {
+            var facts = [], s = +d.dataset.size, du = +d.dataset.duration, h = +d.dataset.height;
+            if (s) facts.push(mb(s));
+            if (du) facts.push(time(du));
+            if (h) facts.push(h + "p");
+            document.getElementById("facts").textContent = facts.join("  ·  ");
+            var c = document.getElementById("copy");
+            if (c) c.onclick = function () { navigator.clipboard.writeText(c.dataset.link).then(function () { c.textContent = "Link copied"; }); };
+            if (d.dataset.tid) {
+              var bar2 = document.getElementById("bar"), st2 = document.getElementById("state");
+              var check = function () {
+                fetch(d.dataset.status, { credentials: "same-origin", cache: "no-store" }).then(function (r) { return r.json(); }).then(function (p) {
+                  if (p.percent != null) { bar2.classList.remove("busy"); bar2.firstChild.style.width = p.percent + "%"; }
+                  if (p.state === "done") { bar2.classList.remove("busy"); bar2.firstChild.style.width = "100%"; bar2.firstChild.style.background = "var(--ok)"; st2.textContent = "Saved on the computer"; return; }
+                  if (p.state === "failed") { bar2.classList.remove("busy"); st2.textContent = "The computer could not save it. Check that it is online and the folder can be written to."; return; }
+                  if (p.percent != null) st2.textContent = "Sending, " + Math.round(p.percent) + "%";
+                  setTimeout(check, 1500);
+                }).catch(function () { setTimeout(check, 3000); });
+              };
+              check();
+            }
+          }
+        })();
+      `
+
+    CLOSE
+
+  CLOSE
+
+  AFTER EMIT ?page
+
+CLOSE
+
+(* ================================================================= *)
+(* END YOUSAVE                                                        *)
+(* ================================================================= *)
