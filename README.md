@@ -7,15 +7,16 @@ OcaltQL is a verb-first execution language for the entire stack. The language re
 ## Projects
 
 | Project | What it is | Live | Folder |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | YouSearch | A multi-source internet search engine in a single OcaltQL file. Web, Wikipedia, news, images, research papers, code and books, with no API keys. | https://yousearch.ocalt.site | [`projects/yousearch`](projects/yousearch) |
+| YouSave | A YouTube downloader in a single OcaltQL file. Paste a link, pick a quality (MP4 or MP3) and choose where the file goes: your storage, one of your computers, or the device you are using. Live progress, and a result page that plays the video and hands you the file. | Install it on your own subdomain | [`projects/youtube-downloader`](projects/youtube-downloader) |
 
 ## Running a project
 
 - **Console.** https://console.ocalt.com runs a script in the browser and shows the result.
 - **Site file.** A project that reads `!GET`, `!POST` or `!COOKIE` is meant to be served as a file on a subdomain, where a path maps to a file and the caller's request is available to the script. See https://ocalt.com/docs/oql, section "Scripts as endpoints".
 
-Each project's own README states how it is run and what it needs.
+Each project's own README states how it is run and what it needs. Some projects use more than the script itself: YouSave, for example, keeps its engine and downloads in your Ocalt storage, so read its README before installing it.
 
 ## Adding a project
 
